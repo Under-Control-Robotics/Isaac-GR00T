@@ -14,11 +14,13 @@
 # limitations under the License.
 
 import os
+
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Literal
+import json
 
 import torch
 import tyro
@@ -28,7 +30,7 @@ from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
 from gr00t.data.schema import EmbodimentTag
 from gr00t.experiment.data_config import load_data_config
 from gr00t.experiment.runner import TrainRunner
-from gr00t.model.gr00t_n1 import GR00T_N1_5
+from gr00t.model.gr00t_n1 import GR00T_N1_5, GR00T_N1_5_Config
 from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
 from gr00t.utils.peft import get_lora_model
 
@@ -123,7 +125,7 @@ class ArgsConfig:
     embodiment_tag: Literal[tuple(EMBODIMENT_TAG_MAPPING.keys())] = "new_embodiment"
     """Embodiment tag to use for training. e.g. 'new_embodiment', 'gr1'"""
 
-    video_backend: Literal["torchcodec", "decord", "torchvision_av"] = "torchcodec"
+    video_backend: Literal["torchcodec", "decord", "torchvision_av"] = "decord"
     """Video backend to use for training. [torchcodec, decord, torchvision_av]"""
 
     # Mixture dataset parameters
@@ -191,7 +193,7 @@ def main(config: ArgsConfig):
 
     # ------------ step 2: load model ------------
     # First, get the data config to determine action horizon
-    data_action_horizon = len(data_config_cls.action_indices)
+    data_action_horizon = len(getattr(data_config_cls, "action_indices", list(range(16))))
 
     # Load model
     model = GR00T_N1_5.from_pretrained(
@@ -298,6 +300,19 @@ def main(config: ArgsConfig):
 
     # 2.3 run experiment
     experiment.train()
+
+    # 2.4 save indices configuration
+    indices_config = {
+        "video_observation_indices": getattr(data_config_cls, "video_observation_indices", [0]),
+        "state_observation_indices": getattr(data_config_cls, "state_observation_indices", [0]),
+        "action_indices": getattr(data_config_cls, "action_indices", list(range(16))),
+        "data_config": config.data_config,
+    }
+
+    indices_path = Path(config.output_dir) / "indices_config.json"
+    with open(indices_path, "w") as f:
+        json.dump(indices_config, f, indent=2)
+    print(f"\nSaved indices configuration to {indices_path}")
 
 
 if __name__ == "__main__":
