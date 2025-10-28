@@ -128,3 +128,8 @@ gr00t_engine/
 gr00t_onnx/
 checkpoints/
 checkpoints
+1020_110demos/
+1021_150demos/
+1021_150demos_20000steps/
+60_demos/
+checkpoint-20000/
