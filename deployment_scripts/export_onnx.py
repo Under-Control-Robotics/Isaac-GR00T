@@ -231,7 +231,7 @@ def export_eagle2_llm(backbone_model, backbone_config, output_dir, attention_mas
             do_constant_folding=True,
             dynamic_axes={
                 "input_ids": {0: "batch_size", 1: "sequence_length"},
-                "vit_embeds": {0: "batch_size"},
+                "vit_embeds": {0: "batch_size", 1: "vit_seq_len"},
                 "attention_mask": {0: "batch_size", 1: "sequence_length"},
                 "embeddings": {0: "batch_size", 1: "sequence_length"},
             },
@@ -293,7 +293,7 @@ def export_action_head(policy, ONNX_export_path, input_state, attention_mask):
         input_names=["state", "embodiment_id"],
         output_names=["output"],
         dynamic_axes={
-            "state": {0: "batch_size"},
+            "state": {0: "batch_size", 1: "sequence_length"},
             "embodiment_id": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
@@ -351,7 +351,7 @@ def export_action_head(policy, ONNX_export_path, input_state, attention_mask):
         input_names=["sa_embs", "vl_embs", "timesteps_tensor"],
         output_names=["output"],
         dynamic_axes={
-            "sa_embs": {0: "batch_size"},
+            "sa_embs": {0: "batch_size", 1: "sequence_length"},
             "vl_embs": {0: "batch_size", 1: "sequence_length"},
             "timesteps_tensor": {0: "batch_size"},
             "output": {0: "batch_size"},
@@ -378,7 +378,7 @@ def export_action_head(policy, ONNX_export_path, input_state, attention_mask):
         input_names=["model_output", "embodiment_id"],
         output_names=["output"],
         dynamic_axes={
-            "model_output": {0: "batch_size"},
+            "model_output": {0: "batch_size", 1: "sequence_length"},
             "embodiment_id": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
@@ -393,7 +393,7 @@ def run_groot_inference(
 ) -> Dict[str, float]:
 
     # load the policy
-    data_config = DATA_CONFIG_MAP["ucr"]
+    data_config = DATA_CONFIG_MAP["ucr_wblm_moby_history"]
     modality_config = data_config.modality_config()
     modality_transform = data_config.transform()
     EMBODIMENT_TAG = "new_embodiment"

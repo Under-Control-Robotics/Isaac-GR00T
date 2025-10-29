@@ -1157,7 +1157,7 @@ class UCRWBLMMobyDataConfig(BaseDataConfig):
 
     def modality_config(self) -> dict[str, ModalityConfig]:
         video_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
+            delta_indices=[0,-30],
             modality_keys=self.video_keys,
         )
 
@@ -1269,7 +1269,7 @@ class UCRWBLMMobyHistoryDataConfig(BaseDataConfig):
         )
 
         language_modality = ModalityConfig(
-            delta_indices=self.observation_indices,
+            delta_indices=[0],
             modality_keys=self.language_keys,
         )
 
@@ -1313,7 +1313,7 @@ class UCRWBLMMobyHistoryDataConfig(BaseDataConfig):
             ),
             # model-specific transform
             GR00TTransform(
-                state_horizon=len(self.observation_indices),
+                state_horizon=1,
                 action_horizon=len(self.action_indices),
                 max_state_dim=64,
                 max_action_dim=32,
