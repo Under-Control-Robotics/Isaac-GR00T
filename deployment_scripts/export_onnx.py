@@ -293,7 +293,7 @@ def export_action_head(policy, ONNX_export_path, input_state, attention_mask):
         input_names=["state", "embodiment_id"],
         output_names=["output"],
         dynamic_axes={
-            "state": {0: "batch_size", 1: "sequence_length"},
+            "state": {0: "batch_size"},
             "embodiment_id": {0: "batch_size"},
             "output": {0: "batch_size"},
         },
@@ -351,7 +351,7 @@ def export_action_head(policy, ONNX_export_path, input_state, attention_mask):
         input_names=["sa_embs", "vl_embs", "timesteps_tensor"],
         output_names=["output"],
         dynamic_axes={
-            "sa_embs": {0: "batch_size", 1: "sequence_length"},
+            "sa_embs": {0: "batch_size"},
             "vl_embs": {0: "batch_size", 1: "sequence_length"},
             "timesteps_tensor": {0: "batch_size"},
             "output": {0: "batch_size"},
@@ -378,7 +378,7 @@ def export_action_head(policy, ONNX_export_path, input_state, attention_mask):
         input_names=["model_output", "embodiment_id"],
         output_names=["output"],
         dynamic_axes={
-            "model_output": {0: "batch_size", 1: "sequence_length"},
+            "model_output": {0: "batch_size"},
             "embodiment_id": {0: "batch_size"},
             "output": {0: "batch_size"},
         },

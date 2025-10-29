@@ -1313,7 +1313,7 @@ class UCRWBLMMobyHistoryDataConfig(BaseDataConfig):
             ),
             # model-specific transform
             GR00TTransform(
-                state_horizon=1,
+                state_horizon=len(self.observation_indices),
                 action_horizon=len(self.action_indices),
                 max_state_dim=64,
                 max_action_dim=32,

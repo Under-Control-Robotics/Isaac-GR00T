@@ -44,7 +44,7 @@ trtexec --useCudaGraph --verbose --stronglyTyped --separateProfileRun --noDataTr
 
 # State Encoder
 echo "------------Building State Encoder--------------------"
-trtexec --useCudaGraph --verbose --stronglyTyped --separateProfileRun --noDataTransfers --onnx=gr00t_onnx/action_head/state_encoder.onnx --saveEngine=gr00t_engine/state_encoder.engine --minShapes=state:1x1x64,embodiment_id:1  --optShapes=state:1x2x64,embodiment_id:1 --maxShapes=state:8x2x64,embodiment_id:8 > gr00t_engine/build_state_encoder.log 2>&1
+trtexec --useCudaGraph --verbose --stronglyTyped --separateProfileRun --noDataTransfers --onnx=gr00t_onnx/action_head/state_encoder.onnx --saveEngine=gr00t_engine/state_encoder.engine --minShapes=state:1x2x64,embodiment_id:1  --optShapes=state:1x2x64,embodiment_id:1 --maxShapes=state:8x2x64,embodiment_id:8 > gr00t_engine/build_state_encoder.log 2>&1
 
 # Action Encoder
 echo "------------Building Action Encoder--------------------"
