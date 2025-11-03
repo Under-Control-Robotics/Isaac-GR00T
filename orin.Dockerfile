@@ -39,12 +39,8 @@ RUN wget https://developer.download.nvidia.com/compute/cudss/0.6.0/local_install
     apt-get clean
 
 COPY pyproject.toml .
-
-<<<<<<< HEAD
-# Set to get precompiled jetson wheels
-=======
-#Set to get precompiled jetson wheels
->>>>>>> 4069041 (Fix orin docker build)
+ 
+#Set to get precompiled jetson wheels 
 RUN export PIP_INDEX_URL=https://pypi.jetson-ai-lab.io/jp6/cu126 && \
     export PIP_TRUSTED_HOST=pypi.jetson-ai-lab.io && \
     pip3 install --upgrade pip setuptools && \
