@@ -231,7 +231,7 @@ def export_eagle2_llm(backbone_model, backbone_config, output_dir, attention_mas
             do_constant_folding=True,
             dynamic_axes={
                 "input_ids": {0: "batch_size", 1: "sequence_length"},
-                "vit_embeds": {0: "batch_size"},
+                "vit_embeds": {0: "batch_size", 1: "vit_seq_len"},
                 "attention_mask": {0: "batch_size", 1: "sequence_length"},
                 "embeddings": {0: "batch_size", 1: "sequence_length"},
             },
@@ -393,7 +393,7 @@ def run_groot_inference(
 ) -> Dict[str, float]:
 
     # load the policy
-    data_config = DATA_CONFIG_MAP["ucr"]
+    data_config = DATA_CONFIG_MAP["ucr_wblm_moby_history"]
     modality_config = data_config.modality_config()
     modality_transform = data_config.transform()
     EMBODIMENT_TAG = "new_embodiment"
