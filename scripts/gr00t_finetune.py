@@ -43,6 +43,9 @@ class ArgsConfig:
     dataset_path: List[str]
     """Path to the dataset directory or directories, we assume all datasets have the same data config"""
 
+    dataset_language_prompts: List[str] | None = None
+    """Optional language prompt override for each dataset. If provided, must match length of dataset_path. Set to None to use dataset's original prompts."""
+
     output_dir: str = "/tmp/gr00t"
     """Directory to save model checkpoints."""
 
@@ -69,7 +72,7 @@ class ArgsConfig:
     """Number of steps between saving checkpoints."""
 
     # Model parameters
-    base_model_path: str = "/data/anthony/Isaac-GR00T/checkpoints/1027_200demos/checkpoint-20000"
+    base_model_path: str = "nvidia/GR00T-N1.5-3B"
     """Path or HuggingFace model ID for the base model."""
 
     tune_llm: bool = False
@@ -144,6 +147,13 @@ class ArgsConfig:
 
 def main(config: ArgsConfig):
     """Main training function."""
+    # Validate language prompts if provided
+    if config.dataset_language_prompts is not None:
+        assert len(config.dataset_language_prompts) == len(config.dataset_path), (
+            f"Number of language prompts ({len(config.dataset_language_prompts)}) "
+            f"must match number of dataset paths ({len(config.dataset_path)})"
+        )
+
     # ------------ step 1: load dataset ------------
     embodiment_tag = EmbodimentTag(config.embodiment_tag)
 
@@ -154,25 +164,33 @@ def main(config: ArgsConfig):
 
     # 1.2 data loader: we will use either single dataset or mixture dataset
     if len(config.dataset_path) == 1:
+        language_prompt = (
+            config.dataset_language_prompts[0] if config.dataset_language_prompts else None
+        )
         train_dataset = LeRobotSingleDataset(
             dataset_path=config.dataset_path[0],
             modality_configs=modality_configs,
             transforms=transforms,
             embodiment_tag=embodiment_tag,  # This will override the dataset's embodiment tag to "new_embodiment"
             video_backend=config.video_backend,
+            language_override=language_prompt,
         )
     else:
         single_datasets = []
-        for p in config.dataset_path:
+        for idx, p in enumerate(config.dataset_path):
             assert os.path.exists(p), f"Dataset path {p} does not exist"
             ## We use the same transforms, modality configs, and embodiment tag for all datasets here,
             ## in reality, you can use dataset from different modalities and embodiment tags
+            language_prompt = (
+                config.dataset_language_prompts[idx] if config.dataset_language_prompts else None
+            )
             dataset = LeRobotSingleDataset(
                 dataset_path=p,
                 modality_configs=modality_configs,
                 transforms=transforms,
                 embodiment_tag=embodiment_tag,
                 video_backend=config.video_backend,
+                language_override=language_prompt,
             )
             single_datasets.append(dataset)
 

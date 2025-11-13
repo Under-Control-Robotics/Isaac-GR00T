@@ -116,6 +116,7 @@ class LeRobotSingleDataset(Dataset):
         video_backend: str = "torchcodec",
         video_backend_kwargs: dict | None = None,
         transforms: ComposedModalityTransform | None = None,
+        language_override: str | None = None,
     ):
         """
         Initialize the dataset.
@@ -128,6 +129,7 @@ class LeRobotSingleDataset(Dataset):
             video_backend_kwargs (dict): Keyword arguments for the video backend when initializing the video reader.
             transforms (ComposedModalityTransform): The transforms to apply to the dataset.
             embodiment_tag (EmbodimentTag): Overload the embodiment tag for the dataset. e.g. define it as "new_embodiment"
+            language_override (str): Optional override for language prompts. If provided, this will be returned instead of the dataset's original language annotations.
         """
         # first check if the path directory exists
         if not Path(dataset_path).exists():
@@ -139,6 +141,7 @@ class LeRobotSingleDataset(Dataset):
         self.transforms = (
             transforms if transforms is not None else ComposedModalityTransform(transforms=[])
         )
+        self.language_override = language_override
 
         self._dataset_path = Path(dataset_path)
         self._dataset_name = self._dataset_path.name
@@ -805,6 +808,11 @@ class LeRobotSingleDataset(Dataset):
         Returns:
             list[str]: The annotation data for the trajectory and step indices. If no matching data is found, return empty strings.
         """
+        # If language override is set, return the override prompt for all indices
+        if self.language_override is not None:
+            step_indices = self.delta_indices[key] + base_index
+            return [self.language_override] * len(step_indices)
+
         assert self.curr_traj_data is not None, f"No data found for {trajectory_id=}"
         # Get the step indices
         step_indices = self.delta_indices[key] + base_index
