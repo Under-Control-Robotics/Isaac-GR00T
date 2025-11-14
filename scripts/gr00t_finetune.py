@@ -136,6 +136,13 @@ class ArgsConfig:
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
 
+    # Multi-camera / video history parameters
+    video_history_enabled: bool = False
+    """Enable video history/multi-camera observations."""
+
+    video_observation_indices: str = "0"
+    """Comma-separated delta indices for video observations (e.g., '0' for single frame, '-30,0' for 2 frames with history, '-30,-15,0' for 3 frames). Only used if video_history_enabled is True."""
+
 
 #####################################################################################
 # main training function
@@ -149,6 +156,38 @@ def main(config: ArgsConfig):
 
     # 1.1 modality configs and transforms
     data_config_cls = load_data_config(config.data_config)
+
+    # 1.2 Override video observation indices if video history is enabled
+    if config.video_history_enabled:
+        # Parse video observation indices from string
+        video_obs_indices = [int(x.strip()) for x in config.video_observation_indices.split(",")]
+        print(f"\n{'='*50}")
+        print(f"VIDEO HISTORY ENABLED")
+        print(f"{'='*50}")
+        print(
+            f"Original video observation indices: {getattr(data_config_cls, 'video_observation_indices', getattr(data_config_cls, 'observation_indices', [0]))}"
+        )
+        print(f"New video observation indices: {video_obs_indices}")
+
+        # Update the data config with new video observation indices
+        data_config_cls.video_observation_indices = video_obs_indices
+
+        # Ensure state_observation_indices is set (for backward compatibility)
+        if (
+            not hasattr(data_config_cls, "state_observation_indices")
+            or data_config_cls.state_observation_indices is None
+        ):
+            data_config_cls.state_observation_indices = getattr(
+                data_config_cls, "observation_indices", [0]
+            )
+
+        print(f"State observation indices (unchanged): {data_config_cls.state_observation_indices}")
+        print(f"Number of video frames per observation: {len(video_obs_indices)}")
+        print(
+            f"Number of state frames per observation: {len(data_config_cls.state_observation_indices)}"
+        )
+        print(f"{'='*50}\n")
+
     modality_configs = data_config_cls.modality_config()
     transforms = data_config_cls.transform()
 
@@ -303,16 +342,28 @@ def main(config: ArgsConfig):
 
     # 2.4 save indices configuration
     indices_config = {
-        "video_observation_indices": getattr(data_config_cls, "video_observation_indices", [0]),
-        "state_observation_indices": getattr(data_config_cls, "state_observation_indices", [0]),
+        "video_observation_indices": getattr(
+            data_config_cls,
+            "video_observation_indices",
+            getattr(data_config_cls, "observation_indices", [0]),
+        ),
+        "state_observation_indices": getattr(
+            data_config_cls,
+            "state_observation_indices",
+            getattr(data_config_cls, "observation_indices", [0]),
+        ),
         "action_indices": getattr(data_config_cls, "action_indices", list(range(16))),
         "data_config": config.data_config,
+        "video_history_enabled": config.video_history_enabled,
     }
 
     indices_path = Path(config.output_dir) / "indices_config.json"
     with open(indices_path, "w") as f:
         json.dump(indices_config, f, indent=2)
     print(f"\nSaved indices configuration to {indices_path}")
+    print(f"Video observation indices: {indices_config['video_observation_indices']}")
+    print(f"State observation indices: {indices_config['state_observation_indices']}")
+    print(f"Action indices: length={len(indices_config['action_indices'])}")
 
 
 if __name__ == "__main__":
