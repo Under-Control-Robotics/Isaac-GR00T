@@ -54,6 +54,8 @@ LE_ROBOT_TASKS_FILENAME = "meta/tasks.jsonl"
 LE_ROBOT_INFO_FILENAME = "meta/info.json"
 LE_ROBOT_STATS_FILENAME = "meta/stats.json"
 LE_ROBOT_DATA_FILENAME = "data/*/*.parquet"
+LE_ROBOT_REWARD_LABELS_FILENAME = "reward_labels.json"
+LE_ROBOT_ADVANTAGE_LABELS_FILENAME = "advantage_labels.json"
 
 
 def calculate_dataset_statistics(parquet_paths: list[Path]) -> dict:
@@ -117,6 +119,8 @@ class LeRobotSingleDataset(Dataset):
         video_backend_kwargs: dict | None = None,
         transforms: ComposedModalityTransform | None = None,
         language_override: str | None = None,
+        enable_rl: bool = False,
+        enable_advantage_conditioning: bool = False,
     ):
         """
         Initialize the dataset.
@@ -130,6 +134,8 @@ class LeRobotSingleDataset(Dataset):
             transforms (ComposedModalityTransform): The transforms to apply to the dataset.
             embodiment_tag (EmbodimentTag): Overload the embodiment tag for the dataset. e.g. define it as "new_embodiment"
             language_override (str): Optional override for language prompts. If provided, this will be returned instead of the dataset's original language annotations.
+            enable_rl (bool): If True, load reward and value labels for RL finetuning.
+            enable_advantage_conditioning (bool): If True, load advantage indicator labels for RECAP/Pi-style training.
         """
         # first check if the path directory exists
         if not Path(dataset_path).exists():
@@ -142,6 +148,8 @@ class LeRobotSingleDataset(Dataset):
             transforms if transforms is not None else ComposedModalityTransform(transforms=[])
         )
         self.language_override = language_override
+        self.enable_rl = enable_rl
+        self.enable_advantage_conditioning = enable_advantage_conditioning
 
         self._dataset_path = Path(dataset_path)
         self._dataset_name = self._dataset_path.name
@@ -149,6 +157,16 @@ class LeRobotSingleDataset(Dataset):
             self.tag = embodiment_tag.value
         else:
             self.tag = embodiment_tag
+
+        # Load reward labels if RL is enabled
+        self._reward_labels = None
+        if self.enable_rl:
+            self._load_reward_labels()
+
+        # Load advantage labels if advantage conditioning is enabled
+        self._advantage_labels = None
+        if self.enable_advantage_conditioning:
+            self._load_advantage_labels()
 
         self._metadata = self._get_metadata(EmbodimentTag(self.tag))
         self._trajectory_ids, self._trajectory_lengths = self._get_trajectories()
@@ -541,7 +559,20 @@ class LeRobotSingleDataset(Dataset):
             dict: The data for the step.
         """
         trajectory_id, base_index = self.all_steps[index]
-        return self.transforms(self.get_step_data(trajectory_id, base_index))
+        data = self.get_step_data(trajectory_id, base_index)
+
+        # Add reward and value if RL is enabled
+        if self.enable_rl:
+            rewards, values = self.get_reward_value(trajectory_id, base_index)
+            data["reward"] = rewards
+            data["value"] = values
+
+        # Add advantage indicator if advantage conditioning is enabled
+        if self.enable_advantage_conditioning:
+            indicator = self.get_advantage_indicator(trajectory_id, base_index)
+            data["indicator"] = indicator
+
+        return self.transforms(data)
 
     def get_step_data(self, trajectory_id: int, base_index: int) -> dict:
         """Get the RAW data for a single step in a trajectory. No transforms are applied.
@@ -870,6 +901,159 @@ class LeRobotSingleDataset(Dataset):
         else:
             raise ValueError(f"Invalid modality: {modality}")
 
+    def _load_reward_labels(self):
+        """Load reward labels from reward_labels.json file."""
+        reward_labels_path = self.dataset_path / LE_ROBOT_REWARD_LABELS_FILENAME
+        if not reward_labels_path.exists():
+            raise FileNotFoundError(
+                f"RL mode enabled but reward labels not found at {reward_labels_path}. "
+                f"Please generate reward labels first."
+            )
+
+        with open(reward_labels_path, "r") as f:
+            self._reward_labels = json.load(f)
+
+        # Create a mapping from episode_index to reward/value arrays for fast lookup
+        self._episode_rewards = {}
+        self._episode_values = {}
+        for ep in self._reward_labels["episodes"]:
+            ep_idx = ep["episode_index"]
+            self._episode_rewards[ep_idx] = np.array(ep["rewards"], dtype=np.float32)
+            self._episode_values[ep_idx] = np.array(ep["values"], dtype=np.float32)
+
+        print(f"Loaded reward labels for {len(self._episode_rewards)} episodes")
+
+    def _load_advantage_labels(self):
+        """Load advantage indicator labels from advantage_labels.json file."""
+        advantage_labels_path = self.dataset_path / LE_ROBOT_ADVANTAGE_LABELS_FILENAME
+        if not advantage_labels_path.exists():
+            raise FileNotFoundError(
+                f"Advantage conditioning enabled but advantage labels not found at {advantage_labels_path}. "
+                f"Please run compute_advantages.py first."
+            )
+
+        with open(advantage_labels_path, "r") as f:
+            self._advantage_labels = json.load(f)
+
+        # Create a mapping from episode_index to indicator arrays for fast lookup
+        self._episode_indicators = {}
+        self._episode_advantages = {}
+        for ep in self._advantage_labels["episodes"]:
+            ep_idx = ep["episode_index"]
+            self._episode_indicators[ep_idx] = np.array(ep["indicators"], dtype=np.float32)
+            self._episode_advantages[ep_idx] = np.array(ep["advantages"], dtype=np.float32)
+
+        print(f"Loaded advantage labels for {len(self._episode_indicators)} episodes")
+        if "metadata" in self._advantage_labels:
+            good_ratio = self._advantage_labels["metadata"].get("good_ratio", 0.5)
+            print(f"Good action ratio (I_t=1): {good_ratio:.1%}")
+
+    def get_reward_value(
+        self,
+        trajectory_id: int,
+        base_index: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Get the reward and value for a trajectory by a base index.
+
+        Args:
+            trajectory_id (int): The ID of the trajectory.
+            base_index (int): The base index of the trajectory.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: The reward and value arrays for the trajectory and step indices.
+                Both have shape matching the action horizon from delta_indices.
+        """
+        if not self.enable_rl:
+            raise ValueError(
+                "RL mode is not enabled. Set enable_rl=True to load reward/value data."
+            )
+
+        # Get the step indices (same as action delta indices)
+        # Assume we use action delta indices for reward/value
+        action_keys = self.modality_keys.get("action", [])
+        if not action_keys:
+            raise ValueError("No action keys found in modality config")
+
+        # Use the first action key's delta indices
+        step_indices = self.delta_indices[action_keys[0]] + base_index
+
+        # Get the trajectory index
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        max_length = self.trajectory_lengths[trajectory_index]
+
+        # Get reward and value arrays for this episode
+        rewards_full = self._episode_rewards.get(trajectory_id)
+        values_full = self._episode_values.get(trajectory_id)
+
+        if rewards_full is None or values_full is None:
+            raise ValueError(f"No reward/value data found for trajectory {trajectory_id}")
+
+        # Pad and retrieve rewards
+        rewards = self.retrieve_data_and_pad(
+            array=rewards_full,
+            step_indices=step_indices,
+            max_length=max_length,
+            padding_strategy="first_last",
+        )
+
+        # Pad and retrieve values
+        values = self.retrieve_data_and_pad(
+            array=values_full,
+            step_indices=step_indices,
+            max_length=max_length,
+            padding_strategy="first_last",
+        )
+
+        return rewards, values
+
+    def get_advantage_indicator(
+        self,
+        trajectory_id: int,
+        base_index: int,
+    ) -> np.ndarray:
+        """Get the advantage indicator for a trajectory by a base index.
+
+        Args:
+            trajectory_id (int): The ID of the trajectory.
+            base_index (int): The base index of the trajectory.
+
+        Returns:
+            np.ndarray: The indicator array for the trajectory and step indices.
+                Has shape matching the action horizon from delta_indices.
+        """
+        if not self.enable_advantage_conditioning:
+            raise ValueError(
+                "Advantage conditioning is not enabled. Set enable_advantage_conditioning=True."
+            )
+
+        # Get the step indices (same as action delta indices)
+        action_keys = self.modality_keys.get("action", [])
+        if not action_keys:
+            raise ValueError("No action keys found in modality config")
+
+        # Use the first action key's delta indices
+        step_indices = self.delta_indices[action_keys[0]] + base_index
+
+        # Get the trajectory index
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        max_length = self.trajectory_lengths[trajectory_index]
+
+        # Get indicator array for this episode
+        indicators_full = self._episode_indicators.get(trajectory_id)
+
+        if indicators_full is None:
+            raise ValueError(f"No indicator data found for trajectory {trajectory_id}")
+
+        # Pad and retrieve indicators
+        indicators = self.retrieve_data_and_pad(
+            array=indicators_full,
+            step_indices=step_indices,
+            max_length=max_length,
+            padding_strategy="first_last",
+        )
+
+        return indicators
+
 
 class CachedLeRobotSingleDataset(LeRobotSingleDataset):
     def __init__(self, img_resize: tuple[int, int] | None = None, *args, **kwargs):
@@ -1121,7 +1305,20 @@ class LeRobotMixtureDataset(Dataset):
             dict: The data for the trajectory and start index.
         """
         dataset, trajectory_name, step = self.sample_step(index)
-        return dataset.transforms(dataset.get_step_data(trajectory_name, step))
+        data = dataset.get_step_data(trajectory_name, step)
+
+        # Add reward and value if RL is enabled
+        if dataset.enable_rl:
+            rewards, values = dataset.get_reward_value(trajectory_name, step)
+            data["reward"] = rewards
+            data["value"] = values
+
+        # Add advantage indicator if advantage conditioning is enabled
+        if dataset.enable_advantage_conditioning:
+            indicator = dataset.get_advantage_indicator(trajectory_name, step)
+            data["indicator"] = indicator
+
+        return dataset.transforms(data)
 
     def __len__(self) -> int:
         """Get the length of a single epoch in the mixture.
