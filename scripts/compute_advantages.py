@@ -277,13 +277,27 @@ def main(config: AdvantageComputeConfig):
                     # Get backbone features
                     backbone_inputs, _ = model.prepare_input(inputs)
                     backbone_outputs = model.backbone(backbone_inputs)
+
+                    # Convert to action_head dtype BEFORE process_backbone_output
+                    # This is needed because vlln expects bfloat16
+                    backbone_outputs["backbone_features"] = backbone_outputs[
+                        "backbone_features"
+                    ].to(dtype=model.action_head.dtype)
+
+                    # IMPORTANT: Process backbone output through vlln + vl_self_attention
+                    # This matches the training flow where action_head.forward() modifies backbone_outputs
+                    backbone_outputs = model.action_head.process_backbone_output(backbone_outputs)
                     backbone_features = backbone_outputs["backbone_features"]
 
-                    # Predict values
-                    value_pred = model.value_head(backbone_features)  # (B, T, 1)
+                    # Predict single state value
+                    value_pred = model.value_head(backbone_features)  # (B, 1, 1)
 
-                    # Get target values (G_norm) from the batch
-                    value_target = batch["value"]  # (B, T)
+                    # Get target values (G_norm) from the batch - take first timestep only
+                    value_target = batch["value"]  # (B, action_horizon)
+
+                    # Take only the first timestep value (current state V(s_t))
+                    if value_target.dim() > 1 and value_target.size(1) > 1:
+                        value_target = value_target[:, 0]  # (B,)
 
                     # Convert to tensor if needed
                     if not isinstance(value_target, torch.Tensor):
@@ -291,9 +305,9 @@ def main(config: AdvantageComputeConfig):
                             value_target, dtype=value_pred.dtype, device=device
                         )
 
-                    # Store predictions
-                    all_values_pred.append(value_pred.squeeze(-1).cpu().numpy())  # (B, T)
-                    all_values_target.append(value_target.cpu().numpy())  # (B, T)
+                    # Store predictions - squeeze to (B,)
+                    all_values_pred.append(value_pred.squeeze(-1).squeeze(-1).cpu().numpy())  # (B,)
+                    all_values_target.append(value_target.cpu().numpy())  # (B,)
 
                 except Exception as e:
                     print(f"\nError processing batch {batch_idx}:")
@@ -305,8 +319,8 @@ def main(config: AdvantageComputeConfig):
                     raise
 
         # Concatenate all batches
-        all_values_pred = np.concatenate(all_values_pred, axis=0)  # (N, T)
-        all_values_target = np.concatenate(all_values_target, axis=0)  # (N, T)
+        all_values_pred = np.concatenate(all_values_pred, axis=0)  # (N,) - one value per step
+        all_values_target = np.concatenate(all_values_target, axis=0)  # (N,) - one value per step
 
         print(f"Predicted values for {len(all_values_pred)} steps")
         print(f"Value pred range: [{all_values_pred.min():.3f}, {all_values_pred.max():.3f}]")
@@ -315,13 +329,13 @@ def main(config: AdvantageComputeConfig):
         # ------------ Step 4: Compute advantages ------------
         print("\nComputing advantages...")
         # A_t = G_norm[t] - V_pred[t]
-        advantages = all_values_target - all_values_pred  # (N, T)
+        advantages = all_values_target - all_values_pred  # (N,) - one advantage per step
 
         print(f"Advantage range: [{advantages.min():.3f}, {advantages.max():.3f}]")
         print(f"Advantage mean: {advantages.mean():.3f}, std: {advantages.std():.3f}")
 
-        # Flatten advantages across all timesteps for threshold computation
-        advantages_flat = advantages.flatten()
+        # Use advantages directly for threshold computation (already flat)
+        advantages_flat = advantages
 
         # ------------ Step 5: Compute threshold ------------
         print(f"\nComputing {config.advantage_quantile:.0%} quantile threshold...")
@@ -331,7 +345,7 @@ def main(config: AdvantageComputeConfig):
 
         # ------------ Step 6: Generate binary indicators ------------
         print("\nGenerating binary indicators...")
-        indicators = (advantages > threshold).astype(np.float32)  # (N, T)
+        indicators = (advantages > threshold).astype(np.float32)  # (N,) - one indicator per step
 
         good_ratio = indicators.mean()
         print(f"Good actions (I_t=1): {good_ratio:.1%}")
@@ -340,15 +354,15 @@ def main(config: AdvantageComputeConfig):
         # ------------ Step 7: Save indicators to file ------------
         print("\nSaving indicators...")
 
-        # Reshape back to per-episode format
+        # Reshape back to per-episode format (one value per step in episode)
         episode_indicators = []
         step_idx = 0
         for ep_idx, traj_len in enumerate(single_dataset.trajectory_lengths):
             episode_data = {
                 "episode_index": int(single_dataset.trajectory_ids[ep_idx]),
                 "length": int(traj_len),
-                "indicators": indicators[step_idx : step_idx + traj_len].tolist(),
-                "advantages": advantages[step_idx : step_idx + traj_len].tolist(),
+                "indicators": [float(indicators[step_idx + i]) for i in range(traj_len)],
+                "advantages": [float(advantages[step_idx + i]) for i in range(traj_len)],
             }
             episode_indicators.append(episode_data)
             step_idx += traj_len

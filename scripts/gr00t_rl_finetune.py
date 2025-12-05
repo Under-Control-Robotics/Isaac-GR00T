@@ -51,7 +51,9 @@ class RLArgsConfig:
     dataset_language_prompts: List[str] | None = None
     """Optional language prompt override for each dataset."""
 
-    output_dir: str = "/data/anthony/Isaac-GR00T/checkpoints/1202_value_head"
+    output_dir: str = (
+        "/data/anthony/Isaac-GR00T/checkpoints/1204_value_head_test_new_data_one_value"
+    )
     """Directory to save model checkpoints."""
 
     data_config: str = "fourier_gr1_arms_only"

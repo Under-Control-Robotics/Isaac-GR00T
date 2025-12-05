@@ -197,7 +197,7 @@ class GR00T_N1_5(PreTrainedModel):
             # Get backbone features: (batch_size, seq_len, hidden_size)
             backbone_features = backbone_outputs[BACKBONE_FEATURE_KEY]
 
-            # Predict values: (batch_size, seq_len, 1)
+            # Predict single state value: (batch_size, 1, 1)
             value_pred = self.value_head(backbone_features)
 
             # Compute value loss if target values are provided
@@ -209,10 +209,8 @@ class GR00T_N1_5(PreTrainedModel):
                         value_target, dtype=value_pred.dtype, device=value_pred.device
                     )
 
-                # Compute value loss
-                value_loss = self.value_head.compute_value_loss(
-                    value_pred.squeeze(-1), value_target
-                )
+                # Compute value loss (loss function handles shape internally)
+                value_loss = self.value_head.compute_value_loss(value_pred, value_target)
 
                 # Add to outputs
                 action_head_outputs["value_pred"] = value_pred

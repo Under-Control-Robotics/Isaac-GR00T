@@ -36,6 +36,7 @@ from typing import Literal
 import cv2
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.animation import FFMpegWriter
 import numpy as np
 import torch
 import tyro
@@ -197,10 +198,8 @@ def visualize_episode(model, dataset, episode_idx, config, data_collator):
     output_path = Path(config.output_dir) / f"episode_{episode_idx:04d}.mp4"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Initialize video writer (will set after first frame)
-    video_writer = None
-
-    # Store values for plotting
+    # Store frames and values
+    frames = []
     values = []
 
     # Calculate starting index for this episode
@@ -241,28 +240,45 @@ def visualize_episode(model, dataset, episode_idx, config, data_collator):
         batched_data = data_collator([step_data])
 
         # Get value prediction only (skip action generation)
-        # Follow the same flow as training: prepare_input -> backbone -> value_head
+        # Follow the same flow as training: prepare_input -> backbone -> process_backbone_output -> value_head
         with torch.no_grad():
             backbone_inputs, _ = model.prepare_input(batched_data)
             backbone_outputs = model.backbone(backbone_inputs)
-            backbone_features = backbone_outputs["backbone_features"]
 
             # Debug: print dtypes on first step
             if step == 0:
-                print(f"  Backbone features dtype: {backbone_features.dtype}")
-                print(f"  Backbone features shape: {backbone_features.shape}")
-                print(f"  Value head weight dtype: {model.value_head.mlp[0].weight.dtype}")
+                print(
+                    f"  Raw backbone features dtype: {backbone_outputs['backbone_features'].dtype}"
+                )
+                print(
+                    f"  Raw backbone features shape: {backbone_outputs['backbone_features'].shape}"
+                )
+                print(f"  Action head dtype: {model.action_head.dtype}")
 
-            # Convert backbone_features to match value_head dtype
-            value_head_dtype = model.value_head.mlp[0].weight.dtype
-            backbone_features = backbone_features.to(dtype=value_head_dtype)
+            # Convert to action_head dtype BEFORE process_backbone_output
+            # This is needed because vlln expects bfloat16
+            backbone_outputs["backbone_features"] = backbone_outputs["backbone_features"].to(
+                dtype=model.action_head.dtype
+            )
 
-            # Predict values: (batch_size, seq_len, 1)
+            # IMPORTANT: Process backbone output through vlln + vl_self_attention
+            # This matches the training flow where action_head.forward() modifies backbone_outputs
+            backbone_outputs = model.action_head.process_backbone_output(backbone_outputs)
+            backbone_features = backbone_outputs["backbone_features"]
+
+            if step == 0:
+                print(f"  Processed backbone features shape: {backbone_features.shape}")
+
+            # Predict single state value: (batch_size, 1, 1)
             value_pred = model.value_head(backbone_features)
 
-            # Take the last timestep value (current state's future return)
-            # Shape: (1, seq_len, 1) -> scalar
-            value_scalar = value_pred[0, -1, 0].item()
+            if step == 0:
+                print(f"  Value pred shape: {value_pred.shape}")
+                print(f"  Value pred: {value_pred}")
+
+            # Extract scalar value
+            # Shape: (1, 1, 1) -> scalar
+            value_scalar = value_pred[0, 0, 0].item()
             values.append(value_scalar)
 
         # Create value plot
@@ -270,20 +286,32 @@ def visualize_episode(model, dataset, episode_idx, config, data_collator):
 
         # Combine frames
         combined_frame = combine_frames(video_frame, plot_frame, config.video_width)
+        frames.append(combined_frame)
 
-        # Initialize video writer on first frame
-        if video_writer is None:
-            h, w = combined_frame.shape[:2]
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            video_writer = cv2.VideoWriter(str(output_path), fourcc, config.fps, (w, h))
+    # Save video using FFMpegWriter
+    print(f"Saving video with {len(frames)} frames...")
+    h, w = frames[0].shape[:2]
 
-        # Convert RGB to BGR for OpenCV
-        combined_frame_bgr = cv2.cvtColor(combined_frame, cv2.COLOR_RGB2BGR)
-        video_writer.write(combined_frame_bgr)
+    # Create a figure and axis for the animation
+    fig, ax = plt.subplots(figsize=(w / 100, h / 100), dpi=100)
+    ax.axis("off")
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
-    # Release video writer
-    if video_writer is not None:
-        video_writer.release()
+    im = ax.imshow(frames[0])
+
+    writer = FFMpegWriter(
+        fps=config.fps,
+        bitrate=2000,
+        codec="libx264",
+        extra_args=["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
+    )
+
+    with writer.saving(fig, str(output_path), dpi=100):
+        for frame in frames:
+            im.set_data(frame)
+            writer.grab_frame()
+
+    plt.close(fig)
 
     print(f"Saved video to {output_path}")
     print(f"Value range: [{min(values):.3f}, {max(values):.3f}]")
