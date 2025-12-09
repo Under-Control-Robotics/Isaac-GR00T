@@ -220,23 +220,50 @@ class FlowmatchingActionHead(nn.Module):
     def set_trainable_parameters(self, tune_projector: bool, tune_diffusion_model: bool):
         self.tune_projector = tune_projector
         self.tune_diffusion_model = tune_diffusion_model
-        for p in self.parameters():
-            p.requires_grad = True
+
+        # Freeze projectors (encoders/decoders)
         if not tune_projector:
             self.state_encoder.requires_grad_(False)
             self.action_encoder.requires_grad_(False)
             self.action_decoder.requires_grad_(False)
             if self.config.add_pos_embed:
                 self.position_embedding.requires_grad_(False)
+        else:
+            self.state_encoder.requires_grad_(True)
+            self.action_encoder.requires_grad_(True)
+            self.action_decoder.requires_grad_(True)
+            if self.config.add_pos_embed:
+                self.position_embedding.requires_grad_(True)
+
+        # Freeze diffusion model
         if not tune_diffusion_model:
             self.model.requires_grad_(False)
+        else:
+            self.model.requires_grad_(True)
+
+        # IMPORTANT: Keep vlln and vl_self_attention trainable for RL value head training
+        # These modules process backbone features that the value head depends on
+        # If frozen, gradient flow to value head breaks
+        if hasattr(self, "vlln") and self.vlln is not None:
+            self.vlln.requires_grad_(True)
+        if hasattr(self, "vl_self_attention") and not isinstance(
+            self.vl_self_attention, nn.Identity
+        ):
+            self.vl_self_attention.requires_grad_(True)
+
         print(f"Tune action head projector: {self.tune_projector}")
         print(f"Tune action head diffusion model: {self.tune_diffusion_model}")
-        # Check if any parameters are still trainable. If not, print a warning.
-        if not tune_projector and not tune_diffusion_model:
-            for name, p in self.named_parameters():
-                if p.requires_grad:
-                    print(f"Action head trainable parameter: {name}")
+        print(f"Note: vlln and vl_self_attention kept trainable for gradient flow")
+
+        # Check trainable parameters
+        trainable_modules = []
+        for name, p in self.named_parameters():
+            if p.requires_grad:
+                module_name = name.split(".")[0]
+                if module_name not in trainable_modules:
+                    trainable_modules.append(module_name)
+        if trainable_modules:
+            print(f"Action head trainable modules: {trainable_modules}")
         if not any(p.requires_grad for p in self.parameters()):
             print("Warning: No action head trainable parameters found.")
 

@@ -567,10 +567,12 @@ class LeRobotSingleDataset(Dataset):
             data["reward"] = rewards
             data["value"] = values
 
-        # Add advantage indicator if advantage conditioning is enabled
+        # Add advantage indicator and advantage values if advantage conditioning is enabled
         if self.enable_advantage_conditioning:
             indicator = self.get_advantage_indicator(trajectory_id, base_index)
+            advantage = self.get_advantage_value(trajectory_id, base_index)
             data["indicator"] = indicator
+            data["advantage"] = advantage
 
         return self.transforms(data)
 
@@ -670,8 +672,8 @@ class LeRobotSingleDataset(Dataset):
         else:
             expected_shape = (len(step_indices), *array.shape[1:])
 
-        # Pad the data
-        output = np.zeros(expected_shape)
+        # Pad the data - preserve dtype from input array
+        output = np.zeros(expected_shape, dtype=array.dtype)
         # Assign the non-padded data
         output[~padding_positions] = raw_data
         # If there exists some padding, pad the data
@@ -924,29 +926,97 @@ class LeRobotSingleDataset(Dataset):
         print(f"Loaded reward labels for {len(self._episode_rewards)} episodes")
 
     def _load_advantage_labels(self):
-        """Load advantage indicator labels from advantage_labels.json file."""
-        advantage_labels_path = self.dataset_path / LE_ROBOT_ADVANTAGE_LABELS_FILENAME
-        if not advantage_labels_path.exists():
+        """Load advantage indicator labels from reward_labels.json file.
+
+        Note: The indicators and advantages are stored in the same reward_labels.json
+        file that contains rewards and values, not in a separate file.
+        """
+        reward_labels_path = self.dataset_path / LE_ROBOT_REWARD_LABELS_FILENAME
+        if not reward_labels_path.exists():
             raise FileNotFoundError(
-                f"Advantage conditioning enabled but advantage labels not found at {advantage_labels_path}. "
-                f"Please run compute_advantages.py first."
+                f"Advantage conditioning enabled but reward_labels.json not found at {reward_labels_path}. "
+                f"Please run compute_advantages.py first to generate indicators."
             )
 
-        with open(advantage_labels_path, "r") as f:
+        with open(reward_labels_path, "r") as f:
             self._advantage_labels = json.load(f)
 
         # Create a mapping from episode_index to indicator arrays for fast lookup
         self._episode_indicators = {}
         self._episode_advantages = {}
+
+        episodes_with_indicators = 0
         for ep in self._advantage_labels["episodes"]:
             ep_idx = ep["episode_index"]
+
+            # Check if this episode has indicator data
+            if "indicators" not in ep or "advantages" not in ep:
+                continue
+
             self._episode_indicators[ep_idx] = np.array(ep["indicators"], dtype=np.float32)
             self._episode_advantages[ep_idx] = np.array(ep["advantages"], dtype=np.float32)
+            episodes_with_indicators += 1
+
+        if episodes_with_indicators == 0:
+            raise ValueError(
+                f"No episodes with indicator data found in {reward_labels_path}. "
+                f"Please run compute_advantages.py to generate indicators."
+            )
 
         print(f"Loaded advantage labels for {len(self._episode_indicators)} episodes")
-        if "metadata" in self._advantage_labels:
-            good_ratio = self._advantage_labels["metadata"].get("good_ratio", 0.5)
-            print(f"Good action ratio (I_t=1): {good_ratio:.1%}")
+
+        # Display advantage computation metadata if available
+        self._global_threshold = None
+        if (
+            "metadata" in self._advantage_labels
+            and "advantage_computation" in self._advantage_labels["metadata"]
+        ):
+            adv_meta = self._advantage_labels["metadata"]["advantage_computation"]
+            if "global_threshold" in adv_meta:
+                self._global_threshold = adv_meta["global_threshold"]
+                print(f"  Global advantage threshold: {self._global_threshold:.6f}")
+            if "dataset_good_ratio" in adv_meta:
+                print(f"  Dataset good action ratio (I_t=1): {adv_meta['dataset_good_ratio']:.1%}")
+            if "method" in adv_meta:
+                print(f"  Advantage computation method: {adv_meta['method']}")
+
+        # Verify indicator alignment with advantages
+        print("\n  Verifying indicator-advantage alignment...")
+        total_steps = 0
+        correct_indicators = 0
+        indicator_ones = 0
+        indicator_zeros = 0
+
+        for ep_idx in list(self._episode_indicators.keys())[:5]:  # Check first 5 episodes
+            indicators = self._episode_indicators[ep_idx]
+            advantages = self._episode_advantages[ep_idx]
+
+            # Verify indicators are binary
+            unique_vals = np.unique(indicators)
+            assert np.all(
+                np.isin(unique_vals, [0.0, 1.0])
+            ), f"Indicators must be binary, got {unique_vals}"
+
+            # Verify indicators match advantages with threshold (if available)
+            if self._global_threshold is not None:
+                expected_indicators = (advantages >= self._global_threshold).astype(np.float32)
+                matches = np.sum(indicators == expected_indicators)
+                correct_indicators += matches
+                total_steps += len(indicators)
+
+            indicator_ones += np.sum(indicators == 1.0)
+            indicator_zeros += np.sum(indicators == 0.0)
+
+        if self._global_threshold is not None and total_steps > 0:
+            accuracy = correct_indicators / total_steps
+            print(f"  ✓ Indicator alignment accuracy (first 5 episodes): {accuracy:.1%}")
+            if accuracy < 0.99:
+                print(f"    WARNING: Low alignment accuracy! Expected >99%")
+
+        print(
+            f"  ✓ Indicator distribution (first 5 episodes): {indicator_ones} ones, {indicator_zeros} zeros"
+        )
+        print(f"    Good action ratio: {indicator_ones / (indicator_ones + indicator_zeros):.1%}")
 
     def get_reward_value(
         self,
@@ -1053,6 +1123,59 @@ class LeRobotSingleDataset(Dataset):
         )
 
         return indicators
+
+    def get_advantage_value(
+        self,
+        trajectory_id: int,
+        base_index: int,
+    ) -> np.ndarray:
+        """Get the advantage value for a trajectory by a base index.
+
+        Args:
+            trajectory_id (int): The ID of the trajectory.
+            base_index (int): The base index of the trajectory.
+
+        Returns:
+            np.ndarray: The advantage array for the trajectory and step indices.
+                Has shape matching the action horizon from delta_indices.
+        """
+        if not self.enable_advantage_conditioning:
+            raise ValueError(
+                "Advantage conditioning is not enabled. Set enable_advantage_conditioning=True."
+            )
+
+        # Get the step indices (same as action delta indices)
+        action_keys = self.modality_keys.get("action", [])
+        if not action_keys:
+            raise ValueError("No action keys found in modality config")
+
+        # Use the first action key's delta indices
+        step_indices = self.delta_indices[action_keys[0]] + base_index
+
+        # Get the trajectory index
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        max_length = self.trajectory_lengths[trajectory_index]
+
+        # Get advantage array for this episode
+        advantages_full = self._episode_advantages.get(trajectory_id)
+
+        if advantages_full is None:
+            raise ValueError(f"No advantage data found for trajectory {trajectory_id}")
+
+        # Pad and retrieve advantages
+        advantages = self.retrieve_data_and_pad(
+            array=advantages_full,
+            step_indices=step_indices,
+            max_length=max_length,
+            padding_strategy="first_last",
+        )
+
+        return advantages
+
+    @property
+    def global_threshold(self) -> float | None:
+        """Get the global advantage threshold used for indicator computation."""
+        return self._global_threshold if self.enable_advantage_conditioning else None
 
 
 class CachedLeRobotSingleDataset(LeRobotSingleDataset):
@@ -1254,6 +1377,23 @@ class LeRobotMixtureDataset(Dataset):
         """The indices of the primary datasets."""
         return self._primary_dataset_indices
 
+    @property
+    def global_threshold(self) -> float | None:
+        """Get the global advantage threshold from constituent datasets.
+
+        Note: All datasets should have the same global threshold if they were
+        processed together using compute_advantages.py.
+        """
+        thresholds = [
+            ds.global_threshold for ds in self.datasets if ds.enable_advantage_conditioning
+        ]
+        if not thresholds:
+            return None
+        # Verify all thresholds are the same
+        if len(set(thresholds)) > 1:
+            print(f"Warning: Different global thresholds found across datasets: {thresholds}")
+        return thresholds[0] if thresholds else None
+
     def __str__(self) -> str:
         dataset_descriptions = []
         for dataset, weight in zip(self.datasets, self.dataset_sampling_weights):
@@ -1313,10 +1453,12 @@ class LeRobotMixtureDataset(Dataset):
             data["reward"] = rewards
             data["value"] = values
 
-        # Add advantage indicator if advantage conditioning is enabled
+        # Add advantage indicator and advantage values if advantage conditioning is enabled
         if dataset.enable_advantage_conditioning:
             indicator = dataset.get_advantage_indicator(trajectory_name, step)
+            advantage = dataset.get_advantage_value(trajectory_name, step)
             data["indicator"] = indicator
+            data["advantage"] = advantage
 
         return dataset.transforms(data)
 

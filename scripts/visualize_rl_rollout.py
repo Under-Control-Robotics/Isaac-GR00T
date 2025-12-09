@@ -207,22 +207,10 @@ def visualize_episode(model, dataset, episode_idx, config, data_collator):
 
     # Process each timestep
     for step in tqdm(range(episode_length), desc=f"Episode {episode_idx}"):
-        # Get data for this step (already transformed)
+        # Get data for this step (already transformed) for model inference
         step_data = dataset[episode_start_idx + step]
 
-        # Extract raw video frames for visualization
-        # After transforms, video has shape (n_frames, n_cameras, H, W, C)
-        # We need the first frame from the specified camera
-        video_tensor = step_data["eagle_content"]["video_inputs"]
-        # video_inputs is a list of videos, take first video (first timestep)
-        # The shape after eagle processing is complex, so we use a simpler approach
-
-        # Get the raw video before VLM processing
-        # We need to get the original frame from the step data
-        # The dataset stores video in various formats depending on transforms
-        # Let's check if there's a "video" key (before VLM processing)
-
-        # Actually, let's access the raw data before transforms
+        # Get the raw video data before transforms for visualization
         trajectory_id = dataset.trajectory_ids[episode_idx]
         raw_step_data = dataset.get_step_data(trajectory_id, step)
 
@@ -236,8 +224,36 @@ def visualize_episode(model, dataset, episode_idx, config, data_collator):
             raise ValueError(f"No video keys found in raw data: {raw_step_data.keys()}")
 
         # Prepare input for model inference
-        # Use the same collator as training to batch a single sample
+        # IMPORTANT: Use the same collator as training to ensure data alignment
+        # step_data contains: eagle_content (with image_inputs, NOT video_inputs),
+        # state, action, reward, value (from enable_rl=True)
+        # The collator processes eagle_content into eagle_input_ids, eagle_pixel_values, etc.
+
+        # DEBUG: Check value data on first step
+        if step == 0 and episode_idx == 0:
+            print(f"\n[DEBUG] step_data keys: {list(step_data.keys())}")
+            if "value" in step_data:
+                print(
+                    f"[DEBUG] Value in step_data: shape={step_data['value'].shape}, "
+                    f"range=[{step_data['value'].min():.3f}, {step_data['value'].max():.3f}], "
+                    f"first 5={step_data['value'][:5]}"
+                )
+            else:
+                print("[DEBUG] WARNING: No 'value' in step_data!")
+
         batched_data = data_collator([step_data])
+
+        # DEBUG: Check batched value data on first step
+        if step == 0 and episode_idx == 0:
+            print(f"[DEBUG] batched_data keys: {list(batched_data.keys())}")
+            if "value" in batched_data:
+                print(
+                    f"[DEBUG] Value in batched_data: shape={batched_data['value'].shape}, "
+                    f"dtype={batched_data['value'].dtype}, "
+                    f"values={batched_data['value'][0]}"
+                )
+            else:
+                print("[DEBUG] WARNING: No 'value' in batched_data!")
 
         # Get value prediction only (skip action generation)
         # Follow the same flow as training: prepare_input -> backbone -> process_backbone_output -> value_head
@@ -337,7 +353,7 @@ def main(config: VisualizationConfig):
     modality_configs = data_config_cls.modality_config()
     transforms = data_config_cls.transform()
 
-    # Load dataset (without RL mode since we're just visualizing)
+    # Load dataset (with RL mode to match training setup)
     print("\nLoading dataset...")
     dataset = LeRobotSingleDataset(
         dataset_path=config.dataset_path,
@@ -345,7 +361,7 @@ def main(config: VisualizationConfig):
         transforms=transforms,
         embodiment_tag=embodiment_tag,
         video_backend=config.video_backend,
-        enable_rl=False,  # Don't need RL labels for visualization
+        enable_rl=True,  # Enable RL mode to match training configuration
     )
 
     num_episodes = len(dataset.trajectory_ids)

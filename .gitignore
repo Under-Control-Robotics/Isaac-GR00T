@@ -128,3 +128,5 @@ gr00t_engine/
 gr00t_onnx/
 checkpoints/
 checkpoints
+visualizations/
+visualizations_2/

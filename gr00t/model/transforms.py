@@ -77,9 +77,14 @@ def collate(features: List[dict], eagle_processor) -> dict:
             # Concat in existing batch dimension.
             batch[key] = torch.cat(values)
         else:
-            # state, state_mask, action and action_mask.
+            # state, state_mask, action, action_mask, reward, value, indicator, etc.
             # Stack to form the batch dimension.
-            batch[key] = torch.from_numpy(np.stack(values))
+            stacked = np.stack(values)
+            # Convert to tensor, ensuring float32 for floating point data
+            tensor = torch.from_numpy(stacked)
+            if tensor.dtype == torch.float64:
+                tensor = tensor.float()  # Convert float64 to float32
+            batch[key] = tensor
     return batch
 
 
@@ -327,6 +332,12 @@ class GR00TTransform(InvertibleModalityTransform):
             transformed_data[k] = v
 
         transformed_data["embodiment_id"] = self.get_embodiment_tag()
+
+        # IMPORTANT: Preserve RL-related fields (reward, value, indicator)
+        # These are added by enable_rl=True or enable_advantage_conditioning=True
+        for rl_key in ["reward", "value", "indicator"]:
+            if rl_key in data:
+                transformed_data[rl_key] = data[rl_key]
 
         if self.training:
             action_and_mask_keys = ["action", "action_mask"]

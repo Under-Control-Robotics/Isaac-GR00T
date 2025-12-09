@@ -80,11 +80,18 @@ class ValueHead(nn.Module):
         nn.init.normal_(self.value_query, mean=0.0, std=0.02)
 
         # Initialize MLP layers
-        for module in self.value_net.modules():
+        for i, module in enumerate(self.value_net.modules()):
             if isinstance(module, nn.Linear):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
                 if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+                    # For the final linear layer (index 8), initialize bias to -0.5
+                    # This puts initial predictions in the middle of [-1, 0] range
+                    # helping the model learn the full range faster
+                    is_final_layer = i == len(list(self.value_net.modules())) - 1
+                    if is_final_layer:
+                        nn.init.constant_(module.bias, -0.5)
+                    else:
+                        nn.init.zeros_(module.bias)
 
         # Initialize cross-attention layers
         nn.init.normal_(self.cross_attention.in_proj_weight, mean=0.0, std=0.02)
@@ -125,8 +132,10 @@ class ValueHead(nn.Module):
         # Apply 3-layer MLP for value prediction
         value_pred = self.value_net(features)  # (B, 1, 1)
 
-        # Clip to (-1, 0] range to match training data distribution
-        value_pred = torch.clamp(value_pred, min=-1.0, max=0.0)
+        # Only clip during inference to avoid blocking gradients during training
+        # During training, let the loss function handle out-of-range predictions
+        if not self.training:
+            value_pred = torch.clamp(value_pred, min=-1.0, max=0.0)
 
         return value_pred
 

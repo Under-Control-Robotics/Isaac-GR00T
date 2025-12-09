@@ -14,10 +14,10 @@
 # limitations under the License.
 
 """
-GR00T RL Finetuning Script
+GR00T Advantage-Conditioned Policy Training Script
 
-This script is for RL finetuning that ONLY trains the value function head.
-The policy (backbone + action head) is frozen.
+This script trains a policy conditioned on advantage indicators.
+The indicator is embedded and prepended to VLM tokens before action generation.
 """
 
 import os
@@ -41,8 +41,8 @@ from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
 
 
 @dataclass
-class RLArgsConfig:
-    """Configuration for GR00T RL fine-tuning (value function only)."""
+class AdvantageConditionedArgsConfig:
+    """Configuration for advantage-conditioned policy training."""
 
     # Dataset parameters
     dataset_path: List[str]
@@ -80,14 +80,21 @@ class RLArgsConfig:
     base_model_path: str = "nvidia/GR00T-N1.5-3B"
     """Path or HuggingFace model ID for the base model (with pretrained policy)."""
 
-    value_hidden_dim: int = 1024
-    """Hidden dimension for value head MLP."""
+    indicator_embedding_dim: int = 4096
+    """Hidden dimension for indicator embedding (must match backbone features)."""
 
-    value_dropout: float = 0.1
-    """Dropout rate for value head."""
+    tune_action_head: bool = True
+    """Whether to train the action head (projector + diffusion model)."""
 
     resume: bool = False
     """Whether to resume from a checkpoint."""
+
+    # Advantage-weighted loss parameters
+    enable_advantage_weighted_loss: bool = True
+    """Enable advantage-weighted loss: wt = sigmoid(k * (At - threshold))."""
+
+    advantage_loss_weight_k: float = 75.0
+    """Constant k for advantage-weighted loss (typically 50-100)."""
 
     # Advanced training parameters
     learning_rate: float = 1e-4
@@ -131,8 +138,8 @@ class RLArgsConfig:
 #####################################################################################
 
 
-def main(config: RLArgsConfig):
-    """Main RL training function - trains ONLY the value head."""
+def main(config: AdvantageConditionedArgsConfig):
+    """Main advantage-conditioned training function - trains the action head policy."""
     # Validate language prompts if provided
     if config.dataset_language_prompts is not None:
         assert len(config.dataset_language_prompts) == len(config.dataset_path), (
@@ -140,7 +147,7 @@ def main(config: RLArgsConfig):
             f"must match number of dataset paths ({len(config.dataset_path)})"
         )
 
-    # ------------ step 1: load dataset with RL mode enabled ------------
+    # ------------ step 1: load dataset with advantage conditioning enabled ------------
     embodiment_tag = EmbodimentTag(config.embodiment_tag)
 
     # 1.1 modality configs and transforms
@@ -149,7 +156,7 @@ def main(config: RLArgsConfig):
     transforms = data_config_cls.transform()
 
     # 1.2 data loader: we will use either single dataset or mixture dataset
-    # IMPORTANT: enable_rl=True to load reward/value labels
+    # IMPORTANT: enable_advantage_conditioning=True to load indicator labels
     if len(config.dataset_path) == 1:
         language_prompt = (
             config.dataset_language_prompts[0] if config.dataset_language_prompts else None
@@ -161,7 +168,8 @@ def main(config: RLArgsConfig):
             embodiment_tag=embodiment_tag,
             video_backend=config.video_backend,
             language_override=language_prompt,
-            enable_rl=True,  # Enable RL mode to load reward/value
+            enable_rl=False,  # NOT training value head
+            enable_advantage_conditioning=True,  # Load indicator labels
         )
     else:
         single_datasets = []
@@ -177,7 +185,8 @@ def main(config: RLArgsConfig):
                 embodiment_tag=embodiment_tag,
                 video_backend=config.video_backend,
                 language_override=language_prompt,
-                enable_rl=True,  # Enable RL mode to load reward/value
+                enable_rl=False,  # NOT training value head
+                enable_advantage_conditioning=True,  # Load indicator labels
             )
             single_datasets.append(dataset)
 
@@ -193,32 +202,46 @@ def main(config: RLArgsConfig):
                 "percentile_mixing_method": "weighted_average",
             },
         )
-        print(f"Loaded {len(single_datasets)} datasets with RL labels")
+        print(f"Loaded {len(single_datasets)} datasets with advantage conditioning labels")
 
-    # ------------ step 2: load model with RL mode enabled ------------
+    # ------------ step 2: load model with advantage conditioning enabled ------------
     # First, get the data config to determine action horizon
     data_action_horizon = len(getattr(data_config_cls, "action_indices", list(range(16))))
 
-    # Load model with RL enabled - this will add a value head
-    # IMPORTANT: Freeze ALL policy parameters (backbone + action head)
-    # Only train the value head
+    # Get global threshold from dataset
+    global_threshold = train_dataset.global_threshold
+    if global_threshold is None:
+        raise ValueError(
+            "Global threshold not found in dataset. "
+            "Please ensure the dataset has been processed with compute_advantages.py"
+        )
+    print(f"\nGlobal advantage threshold from dataset: {global_threshold:.6f}")
+
+    # Load model with advantage conditioning - this will add indicator embedding
+    # IMPORTANT: Train the ACTION HEAD (policy), NOT the value head
     model = GR00T_N1_5.from_pretrained(
         pretrained_model_name_or_path=config.base_model_path,
         tune_llm=False,  # Freeze LLM
         tune_visual=False,  # Freeze vision tower
-        tune_projector=False,  # Freeze action head projector
-        tune_diffusion_model=False,  # Freeze action head DiT
-        tune_value_head=True,  # ONLY train value head
-        enable_rl=True,  # Enable RL mode to add value head
-        value_head_cfg={
-            "hidden_dim": config.value_hidden_dim,
-            "dropout": config.value_dropout,
-        },
+        tune_projector=config.tune_action_head,  # Train action head projector if requested
+        tune_diffusion_model=config.tune_action_head,  # Train action head DiT if requested
+        tune_value_head=False,  # DO NOT train value head
+        enable_rl=False,  # NOT using RL mode
+        enable_advantage_conditioning=True,  # Enable advantage conditioning
+        indicator_embedding_dim=config.indicator_embedding_dim,
+        enable_advantage_weighted_loss=config.enable_advantage_weighted_loss,
+        advantage_loss_weight_k=config.advantage_loss_weight_k,
+        global_threshold=global_threshold,
     )
 
     print("=" * 80)
-    print("RL FINETUNING MODE: Training ONLY the value function head")
-    print("Policy (backbone + action head) is FROZEN")
+    print("ADVANTAGE-CONDITIONED POLICY TRAINING")
+    print("Training action head policy conditioned on advantage indicators")
+    print("Backbone is FROZEN, action head is trainable")
+    if config.enable_advantage_weighted_loss:
+        print(
+            f"Advantage-weighted loss ENABLED: wt = sigmoid({config.advantage_loss_weight_k} * (At - {global_threshold:.6f}))"
+        )
     print("=" * 80)
 
     # Verify trainable parameters
@@ -231,21 +254,21 @@ def main(config: RLArgsConfig):
 
     # List trainable parameter groups
     print("\nTrainable parameter groups:")
-    value_head_params = 0
+    indicator_embedding_params = 0
     action_head_params = 0
     other_params = 0
     for name, param in model.named_parameters():
         if param.requires_grad:
             print(f"  - {name}: {param.shape}")
-            if "value_head" in name:
-                value_head_params += param.numel()
+            if "indicator_embedding" in name:
+                indicator_embedding_params += param.numel()
             elif "action_head" in name:
                 action_head_params += param.numel()
             else:
                 other_params += param.numel()
 
     print(f"\nTrainable parameter breakdown:")
-    print(f"  Value head: {value_head_params:,}")
+    print(f"  Indicator embedding: {indicator_embedding_params:,}")
     print(f"  Action head: {action_head_params:,}")
     print(f"  Other: {other_params:,}")
 
@@ -279,28 +302,30 @@ def main(config: RLArgsConfig):
         model.action_horizon = data_action_horizon
         model.config.action_head_cfg["action_horizon"] = data_action_horizon
 
-        # Make sure action head stays frozen
-        model.action_head.set_trainable_parameters(tune_projector=False, tune_diffusion_model=False)
+        # Make sure action head stays trainable based on config
+        model.action_head.set_trainable_parameters(
+            tune_projector=config.tune_action_head, tune_diffusion_model=config.tune_action_head
+        )
 
         # Re-verify trainable parameters after action head recreation
         print("\n" + "=" * 80)
         print("AFTER ACTION HEAD RECREATION:")
         print("=" * 80)
-        value_head_params = 0
+        indicator_embedding_params = 0
         action_head_params = 0
         other_params = 0
         for name, param in model.named_parameters():
             if param.requires_grad:
                 print(f"  - {name}: {param.shape}")
-                if "value_head" in name:
-                    value_head_params += param.numel()
+                if "indicator_embedding" in name:
+                    indicator_embedding_params += param.numel()
                 elif "action_head" in name:
                     action_head_params += param.numel()
                 else:
                     other_params += param.numel()
 
         print(f"\nTrainable parameter breakdown AFTER recreation:")
-        print(f"  Value head: {value_head_params:,}")
+        print(f"  Indicator embedding: {indicator_embedding_params:,}")
         print(f"  Action head: {action_head_params:,}")
         print(f"  Other: {other_params:,}")
         print("=" * 80 + "\n")
@@ -360,42 +385,12 @@ def main(config: RLArgsConfig):
     # 2.3 run experiment
     experiment.train()
 
-    # Print final value head training statistics
+    # Print final training statistics
     print("\n" + "=" * 80)
-    print("VALUE HEAD TRAINING COMPLETED")
+    print("ADVANTAGE-CONDITIONED POLICY TRAINING COMPLETED")
     print("=" * 80)
-    if hasattr(model, "_value_log_counter") and hasattr(model, "_value_losses"):
-        total_steps = model._value_log_counter
-        print(f"Total training steps: {total_steps}")
-
-        if len(model._value_losses) > 0:
-            print(f"\nValue Loss Progress:")
-            print(f"  Initial loss: {model._value_losses[0]:.6f}")
-            print(f"  Final loss: {model._value_losses[-1]:.6f}")
-            print(f"  Improvement: {model._value_losses[0] - model._value_losses[-1]:.6f}")
-            print(f"  Best loss: {min(model._value_losses):.6f}")
-
-        if len(model._value_pred_ranges) > 0:
-            # Get first and last 10 predictions
-            first_preds = model._value_pred_ranges[:10]
-            last_preds = model._value_pred_ranges[-10:]
-
-            print(f"\nPrediction Range Evolution:")
-            first_mins = [p[0] for p in first_preds]
-            first_maxs = [p[1] for p in first_preds]
-            last_mins = [p[0] for p in last_preds]
-            last_maxs = [p[1] for p in last_preds]
-
-            print(f"  First 10 steps: [{min(first_mins):.3f}, {max(first_maxs):.3f}]")
-            print(f"  Last 10 steps:  [{min(last_mins):.3f}, {max(last_maxs):.3f}]")
-
-            # Overall prediction range
-            all_mins = [p[0] for p in model._value_pred_ranges]
-            all_maxs = [p[1] for p in model._value_pred_ranges]
-            print(f"  Overall range:  [{min(all_mins):.3f}, {max(all_maxs):.3f}]")
-            print(f"  Expected range: [-1.000, 0.000]")
-    else:
-        print("No value head statistics available (model may not have trained with RL mode)")
+    print(f"Total training steps: {config.max_steps}")
+    print(f"Final model saved to: {config.output_dir}")
     print("=" * 80 + "\n")
 
     # 2.4 save indices configuration
@@ -404,7 +399,7 @@ def main(config: RLArgsConfig):
         "state_observation_indices": getattr(data_config_cls, "state_observation_indices", [0]),
         "action_indices": getattr(data_config_cls, "action_indices", list(range(16))),
         "data_config": config.data_config,
-        "rl_mode": True,  # Mark this as RL training
+        "advantage_conditioned": True,  # Mark this as advantage-conditioned training
     }
 
     indices_path = Path(config.output_dir) / "indices_config.json"
@@ -415,11 +410,11 @@ def main(config: RLArgsConfig):
 
 if __name__ == "__main__":
     # Parse arguments using tyro
-    config = tyro.cli(RLArgsConfig)
+    config = tyro.cli(AdvantageConditionedArgsConfig)
 
     # Print the tyro config
     print("\n" + "=" * 50)
-    print("GR00T RL FINE-TUNING CONFIGURATION:")
+    print("GR00T ADVANTAGE-CONDITIONED POLICY TRAINING CONFIGURATION:")
     print("=" * 50)
     for key, value in vars(config).items():
         print(f"{key}: {value}")

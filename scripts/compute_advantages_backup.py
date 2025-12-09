@@ -54,21 +54,16 @@ class AdvantageComputeConfig:
     data_config: str = "fourier_gr1_arms_only"
     """Data configuration to use."""
 
+    # Output parameters
+    output_dir: str = "/tmp/gr00t_advantages"
+    """Directory to save advantage labels."""
+
     # Advantage parameters
     gamma: float = 0.01
     """Discount factor for TD advantage computation (very small as recommended)."""
 
-    good_ratio: float = 0.7
-    """Ratio of top advantages to mark as good. 0.7 = top 70% marked as good."""
-
-    use_smooth_advantage: bool = True
-    """If True, use smooth short-horizon advantage instead of TD advantage."""
-
-    smooth_horizon: int = 5
-    """Horizon N for smooth advantage computation."""
-
-    smooth_lambda: float = 0.8
-    """Lambda decay factor for smooth advantage computation."""
+    advantage_quantile: float = 0.7
+    """Quantile threshold for binary indicators. 0.7 = top 30% marked as good."""
 
     # Data loading parameters
     embodiment_tag: Literal[tuple(EMBODIMENT_TAG_MAPPING.keys())] = "new_embodiment"
@@ -91,46 +86,12 @@ class AdvantageComputeConfig:
     """If True, sample trajectories weighted by length."""
 
 
-def compute_advantages_smooth(values: np.ndarray, N: int = 3, lam: float = 0.8) -> np.ndarray:
-    """
-    Compute smooth short-horizon advantages.
-
-    A_t = sum_{k=1}^{N} lam^{k-1} * (V(s_{t+k}) - V(s_{t+k-1}))
-
-    Args:
-        values: Array of predicted values, shape (T,)
-        N: Horizon for advantage computation
-        lam: Lambda decay factor
-
-    Returns:
-        advantages: Array of shape (T,) with smooth advantages
-    """
-    T = len(values)
-    A = np.zeros(T, dtype=np.float32)
-
-    for t in range(T):
-        adv = 0
-        weight = 1.0
-        for k in range(1, N + 1):
-            if t + k >= T:
-                break
-            dv = values[t + k] - values[t + k - 1]
-            adv += weight * dv
-            weight *= lam
-        A[t] = adv
-
-    return A
-
-
 def compute_episode_advantages(
     model,
     dataset,
     data_collator,
     episode_idx: int,
     gamma: float,
-    use_smooth: bool = False,
-    smooth_horizon: int = 3,
-    smooth_lambda: float = 0.8,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Compute advantages for a single episode using trained value head.
@@ -195,28 +156,23 @@ def compute_episode_advantages(
     values = np.array(values_list, dtype=np.float32)
     rewards = np.array(rewards_list, dtype=np.float32)
 
-    # Compute advantages based on method
-    if use_smooth:
-        # Use smooth short-horizon advantage
-        advantages = compute_advantages_smooth(values, N=smooth_horizon, lam=smooth_lambda)
-    else:
-        # Compute TD-style advantages: A_t = r_t + gamma * V(s_{t+1}) - V(s_t)
-        advantages = np.zeros(episode_length, dtype=np.float32)
+    # Compute TD-style advantages: A_t = r_t + gamma * V(s_{t+1}) - V(s_t)
+    advantages = np.zeros(episode_length, dtype=np.float32)
 
-        for t in range(episode_length - 1):
-            # Standard TD advantage computation
-            advantages[t] = rewards[t] + gamma * values[t + 1] - values[t]
+    for t in range(episode_length - 1):
+        # Standard TD advantage computation
+        advantages[t] = rewards[t] + gamma * values[t + 1] - values[t]
 
-        # Special handling for final timestep:
-        # - If success (reward close to 0): inherit from previous timestep
-        # - If failure (large negative reward): use negative value
-        final_reward = rewards[-1]
-        if abs(final_reward) < 0.1:  # Success case (reward ~ 0)
-            # Inherit advantage from previous timestep
-            advantages[-1] = advantages[-2] if episode_length > 1 else 0.0
-        else:  # Failure case (large negative reward)
-            # Use the negative final reward as advantage
-            advantages[-1] = final_reward
+    # Special handling for final timestep:
+    # - If success (reward close to 0): inherit from previous timestep
+    # - If failure (large negative reward): use negative value
+    final_reward = rewards[-1]
+    if abs(final_reward) < 0.1:  # Success case (reward ~ 0)
+        # Inherit advantage from previous timestep
+        advantages[-1] = advantages[-2] if episode_length > 1 else 0.0
+    else:  # Failure case (large negative reward)
+        # Use the negative final reward as advantage
+        advantages[-1] = final_reward
 
     return advantages, values, rewards
 
@@ -227,6 +183,9 @@ def main(config: AdvantageComputeConfig):
     print("\n" + "=" * 80)
     print("COMPUTING ADVANTAGES AND GENERATING INDICATORS")
     print("=" * 80 + "\n")
+
+    # Create output directory
+    os.makedirs(config.output_dir, exist_ok=True)
 
     # ------------ Step 1: Load model with trained value function ------------
     print("Loading model with trained value function...")
@@ -334,12 +293,7 @@ def main(config: AdvantageComputeConfig):
 
     # ------------ Step 3: Compute advantages using episode rollouts ------------
     print("\nComputing advantages using episode-by-episode rollouts...")
-    if config.use_smooth_advantage:
-        print(
-            f"Method: Smooth short-horizon (N={config.smooth_horizon}, lambda={config.smooth_lambda})"
-        )
-    else:
-        print(f"Method: TD-style (gamma={config.gamma})")
+    print(f"Gamma: {config.gamma}")
 
     # Initialize data collator (same as training/visualization)
     data_collator = DefaultDataCollator()
@@ -350,10 +304,8 @@ def main(config: AdvantageComputeConfig):
     else:
         datasets_to_process = [dataset]
 
-    # Store all dataset results for global threshold computation
-    all_dataset_results = []
+    all_advantages_per_dataset = []
 
-    # ------------ Step 4: Compute advantages for all datasets ------------
     for ds_idx, single_dataset in enumerate(datasets_to_process):
         print(
             f"\nProcessing dataset {ds_idx + 1}/{len(datasets_to_process)}: {single_dataset.dataset_name}"
@@ -371,14 +323,7 @@ def main(config: AdvantageComputeConfig):
         for ep_idx in tqdm(range(num_episodes), desc="Computing advantages"):
             try:
                 advantages, values, rewards = compute_episode_advantages(
-                    model,
-                    single_dataset,
-                    data_collator,
-                    ep_idx,
-                    config.gamma,
-                    use_smooth=config.use_smooth_advantage,
-                    smooth_horizon=config.smooth_horizon,
-                    smooth_lambda=config.smooth_lambda,
+                    model, single_dataset, data_collator, ep_idx, config.gamma
                 )
 
                 trajectory_id = single_dataset.trajectory_ids[ep_idx]
@@ -397,152 +342,97 @@ def main(config: AdvantageComputeConfig):
         # Flatten all advantages for statistics
         advantages_flat = np.concatenate([adv for adv in episode_advantages_dict.values()])
 
-        print(f"\nAdvantage statistics for {single_dataset.dataset_name}:")
+        print(f"\nAdvantage statistics:")
         print(f"  Range: [{advantages_flat.min():.3f}, {advantages_flat.max():.3f}]")
         print(f"  Mean: {advantages_flat.mean():.3f}")
         print(f"  Std: {advantages_flat.std():.3f}")
 
-        # Store results for this dataset
-        all_dataset_results.append(
-            {
-                "dataset": single_dataset,
-                "episode_advantages": episode_advantages_dict,
-                "episode_values": episode_values_dict,
-                "episode_rewards": episode_rewards_dict,
-                "advantages_flat": advantages_flat,
-            }
-        )
+        # ------------ Step 5: Compute threshold ------------
+        print(f"\nComputing {config.advantage_quantile:.0%} quantile threshold...")
+        threshold = np.quantile(advantages_flat, config.advantage_quantile)
+        print(f"Threshold: {threshold:.3f}")
+        print(f"This means actions with advantage > {threshold:.3f} are labeled as 'good' (I_t=1)")
 
-    # ------------ Step 5: Compute GLOBAL threshold across all datasets ------------
-    print("\n" + "=" * 80)
-    print("COMPUTING GLOBAL THRESHOLD ACROSS ALL DATASETS")
-    print("=" * 80)
+        # ------------ Step 4: Generate binary indicators ------------
+        print("\nGenerating binary indicators...")
 
-    all_advantages = np.concatenate([res["advantages_flat"] for res in all_dataset_results])
-
-    print(f"\nGlobal advantage statistics:")
-    print(f"  Total steps: {len(all_advantages)}")
-    print(f"  Range: [{all_advantages.min():.3f}, {all_advantages.max():.3f}]")
-    print(f"  Mean: {all_advantages.mean():.3f}")
-    print(f"  Std: {all_advantages.std():.3f}")
-
-    # For top 70% to be good: threshold at 30th percentile
-    threshold_quantile = 1.0 - config.good_ratio
-    print(f"\nComputing GLOBAL threshold for top {config.good_ratio:.0%} as good...")
-    global_threshold = np.quantile(all_advantages, threshold_quantile)
-    print(f"Global Threshold (at {threshold_quantile:.0%} quantile): {global_threshold:.3f}")
-    print(
-        f"This means actions with advantage >= {global_threshold:.3f} are labeled as 'good' (I_t=1)"
-    )
-    print("=" * 80)
-
-    # ------------ Step 6: Generate indicators and save to each dataset ------------
-    print("\n" + "=" * 80)
-    print("GENERATING INDICATORS AND UPDATING REWARD_LABELS.JSON")
-    print("=" * 80)
-
-    for result in all_dataset_results:
-        single_dataset = result["dataset"]
-        episode_advantages_dict = result["episode_advantages"]
-        episode_values_dict = result["episode_values"]
-        episode_rewards_dict = result["episode_rewards"]
-
-        print(
-            f"\n[{single_dataset.dataset_name}] Generating binary indicators using global threshold..."
-        )
-
-        # Compute indicators per episode using GLOBAL threshold
+        # Compute indicators per episode
         episode_indicators_dict = {}
         for traj_id, advantages in episode_advantages_dict.items():
-            indicators = (advantages >= global_threshold).astype(np.float32)
+            indicators = (advantages >= threshold).astype(np.float32)
             episode_indicators_dict[traj_id] = indicators
 
-        # Compute overall good ratio for this dataset
+        # Compute overall good ratio
         all_indicators = np.concatenate([ind for ind in episode_indicators_dict.values()])
-        dataset_good_ratio = all_indicators.mean()
-        print(f"  Good actions (I_t=1): {dataset_good_ratio:.1%}")
-        print(f"  Bad actions (I_t=0): {(1-dataset_good_ratio):.1%}")
+        good_ratio = all_indicators.mean()
+        print(f"Good actions (I_t=1): {good_ratio:.1%}")
+        print(f"Bad actions (I_t=0): {(1-good_ratio):.1%}")
 
-        print(f"[{single_dataset.dataset_name}] Updating reward_labels.json...")
+        # ------------ Step 5: Save indicators to file ------------
+        print("\nSaving indicators...")
 
-        # Load existing reward_labels.json
-        reward_labels_path = single_dataset.dataset_path / "reward_labels.json"
-        with open(reward_labels_path, "r") as f:
-            reward_data = json.load(f)
-
-        # Update metadata with GLOBAL threshold
-        if "metadata" not in reward_data:
-            reward_data["metadata"] = {}
-
-        reward_data["metadata"]["advantage_computation"] = {
-            "model_path": config.model_path,
-            "method": "smooth" if config.use_smooth_advantage else "td",
-            "gamma": config.gamma if not config.use_smooth_advantage else None,
-            "smooth_horizon": config.smooth_horizon if config.use_smooth_advantage else None,
-            "smooth_lambda": config.smooth_lambda if config.use_smooth_advantage else None,
-            "good_ratio_target": config.good_ratio,
-            "global_threshold": float(global_threshold),  # GLOBAL threshold across all datasets
-            "dataset_good_ratio": float(dataset_good_ratio),  # Actual ratio for this dataset
-        }
-
-        # Update each episode with indicators and advantages
-        episode_data_map = {}
-        for traj_id in episode_advantages_dict.keys():
-            episode_data_map[int(traj_id)] = {
+        # Prepare episode data
+        episode_data_list = []
+        for traj_id in sorted(episode_advantages_dict.keys()):
+            episode_data = {
+                "episode_index": int(traj_id),
+                "length": int(len(episode_advantages_dict[traj_id])),
                 "indicators": episode_indicators_dict[traj_id].tolist(),
                 "advantages": episode_advantages_dict[traj_id].tolist(),
+                "values": episode_values_dict[traj_id].tolist(),
+                "rewards": episode_rewards_dict[traj_id].tolist(),
             }
+            episode_data_list.append(episode_data)
 
-        # Update episodes in reward_data
-        for episode in reward_data["episodes"]:
-            ep_idx = episode["episode_index"]
-            if ep_idx in episode_data_map:
-                episode["indicators"] = episode_data_map[ep_idx]["indicators"]
-                episode["advantages"] = episode_data_map[ep_idx]["advantages"]
+        # Save to JSON
+        output_data = {
+            "metadata": {
+                "model_path": config.model_path,
+                "dataset_path": single_dataset.dataset_path.as_posix(),
+                "gamma": config.gamma,
+                "advantage_quantile": config.advantage_quantile,
+                "threshold": float(threshold),
+                "total_steps": int(len(advantages_flat)),
+                "good_ratio": float(good_ratio),
+            },
+            "episodes": episode_data_list,
+        }
 
-        # Save back to reward_labels.json
-        with open(reward_labels_path, "w") as f:
-            json.dump(reward_data, f, indent=2)
+        output_file = (
+            Path(config.output_dir) / f"advantage_labels_{single_dataset.dataset_name}.json"
+        )
+        with open(output_file, "w") as f:
+            json.dump(output_data, f, indent=2)
 
-        print(f"  Updated reward_labels.json: {reward_labels_path}")
-        print(f"  Added fields: indicators, advantages")
-        print(f"  Saved global_threshold: {global_threshold:.3f}")
+        print(f"Saved advantage labels to: {output_file}")
 
-    # ------------ Step 7: Print summary statistics ------------
+        # Also save to the dataset directory
+        dataset_output_file = single_dataset.dataset_path / "advantage_labels.json"
+        with open(dataset_output_file, "w") as f:
+            json.dump(output_data, f, indent=2)
+        print(f"Also saved to dataset directory: {dataset_output_file}")
+
+        all_advantages_per_dataset.append(advantages_flat)
+
+    # ------------ Step 6: Print summary statistics ------------
     print("\n" + "=" * 80)
     print("SUMMARY")
     print("=" * 80)
     print(f"Processed {len(datasets_to_process)} dataset(s)")
-    if config.use_smooth_advantage:
-        print(
-            f"Method: Smooth short-horizon (N={config.smooth_horizon}, lambda={config.smooth_lambda})"
-        )
-    else:
-        print(f"Method: TD-style (gamma={config.gamma})")
-    print(f"Good ratio target: {config.good_ratio:.0%}")
+    print(f"Gamma (discount factor): {config.gamma}")
+    print(f"Advantage quantile: {config.advantage_quantile:.0%}")
 
-    print(f"\nGlobal advantage statistics (all datasets):")
-    print(f"  Total steps: {len(all_advantages)}")
-    print(f"  Mean: {all_advantages.mean():.3f}")
-    print(f"  Std: {all_advantages.std():.3f}")
-    print(f"  Min: {all_advantages.min():.3f}")
-    print(f"  Max: {all_advantages.max():.3f}")
-    print(f"  Global Threshold: {global_threshold:.3f}")
-
-    # Show per-dataset good ratios
-    print(f"\nPer-dataset good ratios:")
-    for result in all_dataset_results:
-        ds_advantages = result["advantages_flat"]
-        ds_indicators = (ds_advantages >= global_threshold).astype(np.float32)
-        ds_good_ratio = ds_indicators.mean()
-        print(f"  {result['dataset'].dataset_name}: {ds_good_ratio:.1%}")
+    if len(all_advantages_per_dataset) > 0:
+        all_advantages = np.concatenate(all_advantages_per_dataset)
+        print(f"\nOverall advantage statistics:")
+        print(f"  Mean: {all_advantages.mean():.3f}")
+        print(f"  Std: {all_advantages.std():.3f}")
+        print(f"  Min: {all_advantages.min():.3f}")
+        print(f"  Max: {all_advantages.max():.3f}")
+        print(f"  Threshold: {np.quantile(all_advantages, config.advantage_quantile):.3f}")
 
     print("\n" + "=" * 80)
-    print("DONE! Updated all reward_labels.json files with:")
-    print("  - indicators (binary labels using global threshold)")
-    print("  - advantages (per-step advantage values)")
-    print("  - global_threshold (same threshold applied to all datasets)")
-    print(f"\nAll datasets now share the same threshold: {global_threshold:.3f}")
+    print("DONE! Advantage labels saved.")
     print(
         "Now you can train an advantage-conditioned policy using enable_advantage_conditioning=True"
     )
