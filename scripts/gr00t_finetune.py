@@ -337,8 +337,6 @@ if __name__ == "__main__":
     print(f"Using {config.num_gpus} GPUs")
 
     if config.num_gpus == 1:
-        # Single GPU mode - set CUDA_VISIBLE_DEVICES=0
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
         # Run the script normally
         main(config)
     else:
