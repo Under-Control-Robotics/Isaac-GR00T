@@ -300,6 +300,91 @@ MODALITY_CONFIGS = {
             modality_keys=["annotation.human.coarse_action"],
         ),
     },
+    ##### UCR (Under-Control Robotics) configurations #####
+    "ucr_wblm_moby_history": {
+        "video": ModalityConfig(
+            delta_indices=[-30, 0],
+            modality_keys=["ego_view"],
+        ),
+        "state": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "waist_joint",
+                "right_arm_joint",
+                "left_arm_joint",
+                "right_leg_joint",
+                "left_leg_joint",
+                "orientation_joint",
+            ],
+        ),
+        "action": ModalityConfig(
+            delta_indices=list(range(16)),
+            modality_keys=[
+                "behavior_mode",
+                "left_ee_position",
+                "right_ee_position",
+                "left_ee_orientation",
+                "right_ee_orientation",
+                "base_height",
+                "base_orientation",
+                "base_vel",
+            ],
+            action_configs=[
+                # behavior_mode
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # left_ee_position
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # right_ee_position
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # left_ee_orientation
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # right_ee_orientation
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # base_height
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # base_orientation
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                # base_vel
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+            ],
+        ),
+        "language": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=["annotation.human.action.task_description"],
+        ),
+    },
 }
 
 

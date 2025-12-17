@@ -37,13 +37,16 @@ if __name__ == "__main__":
     if ft_config.modality_config_path is not None:
         load_modality_config(ft_config.modality_config_path)
 
+    # dataset_path is now always a list
+    dataset_paths = ft_config.dataset_path
+
     config = get_default_config().load_dict(
         {
             "data": {
                 "download_cache": False,
                 "datasets": [
                     {
-                        "dataset_paths": [ft_config.dataset_path],
+                        "dataset_paths": dataset_paths,
                         "mix_ratio": 1.0,
                         "embodiment_tag": embodiment_tag,
                     }
