@@ -46,7 +46,7 @@ CUDA_VISIBLE_DEVICES=0 python gr00t/experiment/launch_finetune.py \
   --tune-diffusion-model \
   --tune-projector \
   --num-gpus 1 \
-  --output-dir ./checkpoints/ucr_17_finetune \
+  --output-dir ./checkpoints/1217_ucr_17_finetune \
   --global-batch-size 64 \
   --learning-rate 1e-4 \
   --max-steps 25000 \

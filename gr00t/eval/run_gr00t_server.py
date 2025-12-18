@@ -5,7 +5,6 @@ import os
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.policy.gr00t_policy import Gr00tPolicy
 from gr00t.policy.replay_policy import ReplayPolicy
-from gr00t.policy.server_client import PolicyServer
 import tyro
 
 
@@ -49,9 +48,18 @@ class ServerConfig:
     use_sim_policy_wrapper: bool = False
     """Whether to use the sim policy wrapper"""
 
+    server_type: str = "zmq"
+    """Server type: 'zmq' (default, current) or 'http' (legacy from ucr branch)"""
+
+    zmq_serialization: str = "msgpack"
+    """ZMQ serialization: 'msgpack' (default, current) or 'pickle' (old UCR branch)"""
+
 
 def main(config: ServerConfig):
     print("Starting GR00T inference server...")
+    print(f"  Server type: {config.server_type}")
+    if config.server_type == "zmq":
+        print(f"  ZMQ serialization: {config.zmq_serialization}")
     print(f"  Embodiment tag: {config.embodiment_tag}")
     print(f"  Model path: {config.model_path}")
     print(f"  Device: {config.device}")
@@ -93,11 +101,44 @@ def main(config: ServerConfig):
 
         policy = Gr00tSimPolicyWrapper(policy)
 
-    server = PolicyServer(
-        policy=policy,
-        host=config.host,
-        port=config.port,
-    )
+    # Create server based on type
+    if config.server_type == "http":
+        print("\nUsing HTTP server (legacy mode from ucr branch)")
+        print("Endpoint: POST /act with JSON payload {'observation': {...}}")
+        print("Install dependencies: pip install uvicorn fastapi")
+        from gr00t.eval.http_server import HTTPInferenceServer
+
+        server = HTTPInferenceServer(
+            policy=policy,
+            host=config.host,
+            port=config.port,
+        )
+    elif config.server_type == "zmq":
+        if config.zmq_serialization == "pickle":
+            print("\nUsing ZMQ server with PICKLE serialization (old UCR branch compatible)")
+            print("This mode is compatible with old UCR branch clients")
+            from gr00t.eval.robot import RobotInferenceServer
+
+            server = RobotInferenceServer(
+                model=policy,
+                host=config.host,
+                port=config.port,
+            )
+        elif config.zmq_serialization == "msgpack":
+            print("\nUsing ZMQ server with MSGPACK serialization (current default)")
+            from gr00t.policy.server_client import PolicyServer
+
+            server = PolicyServer(
+                policy=policy,
+                host=config.host,
+                port=config.port,
+            )
+        else:
+            raise ValueError(
+                f"Invalid zmq_serialization: {config.zmq_serialization}. Must be 'msgpack' or 'pickle'"
+            )
+    else:
+        raise ValueError(f"Invalid server_type: {config.server_type}. Must be 'zmq' or 'http'")
 
     try:
         server.run()
