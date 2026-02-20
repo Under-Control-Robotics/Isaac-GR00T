@@ -136,6 +136,10 @@ class ArgsConfig:
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
 
+    # Data augmentation parameters
+    state_mask_prob: float = 1.0
+    """Probability of masking each state dimension (0.0 to 1.0). Set to 1.0 to mask all dimensions to zero. Set to 0.0 to disable masking."""
+
 
 #####################################################################################
 # main training function
@@ -149,6 +153,12 @@ def main(config: ArgsConfig):
 
     # 1.1 modality configs and transforms
     data_config_cls = load_data_config(config.data_config)
+
+    # Update state_mask_prob if the data config supports it
+    if hasattr(data_config_cls, "state_mask_prob"):
+        data_config_cls.state_mask_prob = config.state_mask_prob
+        print(f"Using state masking with probability: {config.state_mask_prob}")
+
     modality_configs = data_config_cls.modality_config()
     transforms = data_config_cls.transform()
 

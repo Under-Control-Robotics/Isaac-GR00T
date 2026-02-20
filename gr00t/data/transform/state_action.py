@@ -588,6 +588,44 @@ class StateActionDropout(ModalityTransform):
         return data
 
 
+class StateActionRandomMask(ModalityTransform):
+    """
+    Class for randomly masking dimensions of state or action.
+
+    This randomly masks (sets to 0) a percentage of dimensions to prevent overfitting.
+
+    Args:
+        apply_to (list[str]): The keys in the modality to load and transform.
+        mask_prob (float): Probability of masking each dimension (e.g., 0.3 for 30%).
+    """
+
+    # Configurable attributes
+    mask_prob: float = Field(..., description="Probability of masking each dimension.")
+
+    def apply(self, data: dict[str, Any]) -> dict[str, Any]:
+        if not self.training:
+            # Don't mask the data in eval mode
+            return data
+        if self.mask_prob <= 0:
+            # If mask probability is 0 or negative, don't mask
+            return data
+
+        for key in self.apply_to:
+            state = data[key]
+            assert isinstance(state, torch.Tensor)
+
+            # Create a random mask for each dimension
+            # mask_prob determines the probability that each dimension is masked
+            mask = torch.rand(state.shape[-1]) < self.mask_prob
+
+            # Apply mask: set masked dimensions to 0
+            state = state.clone()  # Clone to avoid in-place modification
+            state[..., mask] = 0
+
+            data[key] = state
+        return data
+
+
 class StateActionSinCosTransform(ModalityTransform):
     """
     Class for state or action sin-cos transform.

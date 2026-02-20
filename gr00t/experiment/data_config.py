@@ -21,6 +21,7 @@ from gr00t.data.dataset import ModalityConfig
 from gr00t.data.transform.base import ComposedModalityTransform, ModalityTransform
 from gr00t.data.transform.concat import ConcatTransform
 from gr00t.data.transform.state_action import (
+    StateActionRandomMask,
     StateActionSinCosTransform,
     StateActionToTensor,
     StateActionTransform,
@@ -1266,6 +1267,19 @@ class UCRWBLMMobyHistoryDataConfig(BaseDataConfig):
     state_observation_indices = [0]
     action_indices = list(range(16))
 
+    # State masking configuration
+    state_mask_prob: float = 0.3  # Default to 30% masking, set to 1.0 for 100% masking
+
+    def __init__(self, state_mask_prob: float = 0.3):
+        """
+        Initialize the data config.
+
+        Args:
+            state_mask_prob: Probability of masking each state dimension (0.0 to 1.0).
+                           Set to 1.0 to mask all dimensions (all zeros).
+        """
+        self.state_mask_prob = state_mask_prob
+
     def modality_config(self) -> dict[str, ModalityConfig]:
         video_modality = ModalityConfig(
             delta_indices=self.video_observation_indices,
@@ -1313,6 +1327,9 @@ class UCRWBLMMobyHistoryDataConfig(BaseDataConfig):
             # state transforms
             StateActionToTensor(apply_to=self.state_keys),
             StateActionSinCosTransform(apply_to=self.state_keys),
+            StateActionRandomMask(
+                apply_to=self.state_keys, mask_prob=self.state_mask_prob
+            ),  # Configurable state masking
             # action transforms
             StateActionToTensor(apply_to=self.action_keys),
             StateActionTransform(

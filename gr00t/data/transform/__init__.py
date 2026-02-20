@@ -22,6 +22,7 @@ from .concat import ConcatTransform
 from .state_action import (
     StateActionDropout,
     StateActionPerturbation,
+    StateActionRandomMask,
     StateActionSinCosTransform,
     StateActionToTensor,
     StateActionTransform,
