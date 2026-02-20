@@ -1254,21 +1254,10 @@ class UCRWBLMMobyHistoryDataConfig(BaseDataConfig):
 
     video_keys = ["video.ego_view"]
     state_keys = [
-        "state.waist_joint",
-        "state.right_arm_joint",
-        "state.right_leg_joint",
-        "state.left_arm_joint",
-        "state.left_leg_joint",
+        "state.state",
     ]
     action_keys = [
-        "action.behavior_mode",
-        "action.left_ee_position",
-        "action.left_ee_orientation",
-        "action.right_ee_position",
-        "action.right_ee_orientation",
-        "action.base_vel",
-        "action.base_height",
-        "action.base_orientation",
+        "action.action",
     ]
     language_keys = ["annotation.human.action.task_description"]
 
