@@ -590,17 +590,17 @@ class StateActionDropout(ModalityTransform):
 
 class StateActionRandomMask(ModalityTransform):
     """
-    Class for randomly masking dimensions of state or action.
+    Class for randomly masking entire trajectory of state or action.
 
-    This randomly masks (sets to 0) a percentage of dimensions to prevent overfitting.
+    With probability mask_prob, mask the entire trajectory (all timesteps, all dimensions) to 0.
 
     Args:
         apply_to (list[str]): The keys in the modality to load and transform.
-        mask_prob (float): Probability of masking each dimension (e.g., 0.3 for 30%).
+        mask_prob (float): Probability of masking entire trajectory (e.g., 0.3 for 30% chance).
     """
 
     # Configurable attributes
-    mask_prob: float = Field(..., description="Probability of masking each dimension.")
+    mask_prob: float = Field(..., description="Probability of masking entire trajectory.")
 
     def apply(self, data: dict[str, Any]) -> dict[str, Any]:
         if not self.training:
@@ -614,13 +614,12 @@ class StateActionRandomMask(ModalityTransform):
             state = data[key]
             assert isinstance(state, torch.Tensor)
 
-            # Create a random mask for each dimension
-            # mask_prob determines the probability that each dimension is masked
-            mask = torch.rand(state.shape[-1]) < self.mask_prob
+            # Clone to avoid in-place modification
+            state = state.clone()
 
-            # Apply mask: set masked dimensions to 0
-            state = state.clone()  # Clone to avoid in-place modification
-            state[..., mask] = 0
+            # With probability mask_prob, mask entire trajectory to 0
+            if torch.rand(1).item() < self.mask_prob:
+                state[...] = 0
 
             data[key] = state
         return data
