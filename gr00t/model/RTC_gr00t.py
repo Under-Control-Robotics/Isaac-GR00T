@@ -147,8 +147,8 @@ class RealTimeChunkingPolicy:
         have been executed (t >= s_min), then generating a new chunk using guided
         inference with the previous chunk as inpainting guidance.
         """
-        with self.lock:
-            while self.running:
+        while self.running:
+            with self.lock:
                 # Wait until at least s_min actions have been executed
                 while self.t < self.s_min and self.running:
                     self.condition.wait()
@@ -175,28 +175,26 @@ class RealTimeChunkingPolicy:
                 obs_copy = self.latest_obs.copy() if self.latest_obs is not None else None
                 d = self.d  # Use fixed delay
 
-        # Release lock during inference (this can take a while)
-        if obs_copy is None:
-            with self.lock:
+            # Release lock during inference (this can take a while)
+            if obs_copy is None:
                 continue
 
-        # Run guided inference with inpainting
-        try:
-            new_chunk = self._guided_inference(obs_copy, prev_chunk_overlap, d, s)
-        except Exception as e:
-            print(f"RTC: Error in guided inference: {e}")
-            import traceback
-            traceback.print_exc()
-            with self.lock:
+            # Run guided inference with inpainting
+            try:
+                new_chunk = self._guided_inference(obs_copy, prev_chunk_overlap, d, s)
+            except Exception as e:
+                print(f"RTC: Error in guided inference: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
 
-        # Acquire lock to update shared state
-        with self.lock:
-            self.current_chunk = new_chunk
-            self.t = self.t - s  # Reset t to index into new chunk
+            # Acquire lock to update shared state
+            with self.lock:
+                self.current_chunk = new_chunk
+                self.t = self.t - s  # Reset t to index into new chunk
 
-            # Note: we observe the actual delay by checking self.t here
-            # but since we use fixed delay, we don't update the delay estimate
+                # Note: we observe the actual delay by checking self.t here
+                # but since we use fixed delay, we don't update the delay estimate
 
     def _guided_inference(
         self,
