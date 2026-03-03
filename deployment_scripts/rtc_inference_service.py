@@ -14,30 +14,47 @@
 # limitations under the License.
 
 """
-GR00T Inference Service
+GR00T Real-Time Chunking (RTC) Inference Service
 
-This script provides both ZMQ and HTTP server/client implementations for deploying GR00T models.
-The HTTP server exposes a REST API for easy integration with web applications and other services.
+This extends the standard inference service with Real-Time Chunking support for TensorRT models.
+RTC provides smooth action transitions between chunks by using weighted initialization instead of
+pure noise, reducing jerky behavior and maintaining temporal consistency.
 
-1. Default is zmq server.
+Usage:
+    # RTC TensorRT Server (recommended for deployment)
+    python deployment_scripts/rtc_inference_service.py \\
+        --server \\
+        --model_path 0301-pipe-0416/checkpoint-12000/ \\
+        --embodiment-tag new_embodiment \\
+        --data-config ucr_wblm_moby_history \\
+        --denoising-steps 4 \\
+        --inference_mode tensorrt \\
+        --trt-engine-path 0301-pipe-0416/gr00t_engine/ \\
+        --use_rtc \\
+        --rtc_control_dt_ms 20.0 \\
+        --rtc_fixed_delay_ms 80.0 \\
+        --rtc_execution_horizon 8
 
-Run server: python scripts/inference_service.py --server
-Run client: python scripts/inference_service.py --client
+    # Standard PyTorch Server (no RTC, for comparison)
+    python deployment_scripts/rtc_inference_service.py \\
+        --server \\
+        --model_path 0301-pipe-0416/checkpoint-12000/ \\
+        --embodiment-tag new_embodiment \\
+        --data-config ucr_wblm_moby_history \\
+        --denoising-steps 4 \\
+        --inference_mode pytorch
 
-2. Run as Http Server:
+Key Parameters for RTC:
+    - H (action_horizon): Set by data_config (e.g., 16 for ucr_wblm_moby_history)
+    - d (inference_delay): ⌊rtc_fixed_delay_ms / rtc_control_dt_ms⌋ (e.g., ⌊80/20⌋ = 4)
+    - s (execution_horizon): rtc_execution_horizon (e.g., 8)
+    - Constraint: d ≤ s ≤ H - d
 
-Dependencies for `http_server` mode:
-    => Server (runs GR00T model on GPU): `pip install uvicorn fastapi json-numpy`
-    => Client: `pip install requests json-numpy`
-
-HTTP Server Usage:
-    python scripts/inference_service.py --server --http-server --port 8000
-
-HTTP Client Usage (assuming a server running on 0.0.0.0:8000):
-    python scripts/inference_service.py --client --http-server --host 0.0.0.0 --port 8000
-
-You can use bore to forward the port to your client: `159.223.171.199` is bore.pub.
-    bore local 8000 --to 159.223.171.199
+Scheduling:
+    For 50Hz control (Δt=20ms), 80ms inference delay (d=4), H=16, s=8:
+    - Start inference s-d=4 timesteps after chunk execution begins
+    - New chunk ready exactly when needed at timestep s=8
+    - Smooth transitions via weighted initialization: W*prev_chunk + (1-W)*noise
 """
 
 import time
@@ -46,18 +63,16 @@ from typing import Literal
 
 import numpy as np
 import tyro
-from trt_model_forward import setup_tensorrt_engines
 
 from gr00t.data.embodiment_tags import EMBODIMENT_TAG_MAPPING
 from gr00t.eval.robot import RobotInferenceClient, RobotInferenceServer
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from gr00t.model.policy import Gr00tPolicy
-from gr00t.model.RTC_gr00t import RealTimeChunkingPolicy
 
 
 @dataclass
-class ArgsConfig:
-    """Command line arguments for the inference service."""
+class RTCArgsConfig:
+    """Command line arguments for the RTC inference service."""
 
     model_path: str = "nvidia/GR00T-N1.5-3B"
     """Path to the model checkpoint directory."""
@@ -95,20 +110,37 @@ class ArgsConfig:
     trt_engine_path: str = "gr00t_engine"
     """Path to the TensorRT engine. Used only in 'tensorrt' inference mode."""
 
-    use_rtc: bool = True
-    """Whether to use Real-Time Chunking (RTC) for the policy."""
+    # ============================================================================
+    # Real-Time Chunking (RTC) Parameters
+    # ============================================================================
 
-    control_dt_ms: float = 20.0
-    """Control loop period in milliseconds (Δt). Default: 20ms for 50Hz."""
+    use_rtc: bool = False
+    """Enable Real-Time Chunking for smoother action transitions. Only works with tensorrt mode."""
 
-    fixed_delay_ms: float = 80.0
-    """Expected inference delay in milliseconds (δ). Default: 80ms."""
+    rtc_control_dt_ms: float = 20.0
+    """Control loop period in milliseconds. For 50Hz control, use 20ms. For 20Hz, use 50ms."""
 
-    rtc_s_min: int = 8
-    """Minimum execution horizon for RTC. Must satisfy: d ≤ s_min ≤ H - d."""
+    rtc_fixed_delay_ms: float = 80.0
+    """Expected inference delay in milliseconds. Measure your actual inference latency and set this.
+    For example: 80ms is typical for TensorRT on RTX 4090 with network overhead."""
 
-    rtc_beta: float = 1.0
-    """Maximum guidance weight for RTC ΠGDM. Default: 1.0."""
+    rtc_execution_horizon: int = 8
+    """Execution horizon (s parameter) - number of actions executed before starting next inference.
+    Must satisfy: d ≤ s ≤ H - d, where d = ⌊rtc_fixed_delay_ms / rtc_control_dt_ms⌋
+
+    Example for H=16, d=4: valid range is [4, 12], recommended s=8 for balance.
+    - Larger s: smoother but less reactive
+    - Smaller s: more reactive but may have slight discontinuities
+    """
+
+    rtc_use_async: bool = False
+    """Use asynchronous inference in background thread.
+    Server mode should typically use False (synchronous).
+    Client mode can use True for better parallelism."""
+
+    rtc_return_full_chunk: bool = True
+    """Return full action chunks instead of single actions.
+    Server should use True, client handles chunk execution."""
 
 
 #####################################################################################
@@ -118,17 +150,16 @@ def _example_zmq_client_call(obs: dict, host: str, port: int, api_token: str):
     """
     Example ZMQ client call to the server.
     """
-    # Original ZMQ client mode
     # Create a policy wrapper
     policy_client = RobotInferenceClient(host=host, port=port, api_token=api_token)
 
-    print("Available modality config available:")
+    print("Available modality config:")
     modality_configs = policy_client.get_modality_config()
     print(modality_configs.keys())
 
     time_start = time.time()
     action = policy_client.get_action(obs)
-    print(f"Total time taken to get action from server: {time.time() - time_start} seconds")
+    print(f"Total time taken to get action from server: {time.time() - time_start:.3f} seconds")
     return action
 
 
@@ -146,7 +177,7 @@ def _example_http_client_call(obs: dict, host: str, port: int, api_token: str):
 
     time_start = time.time()
     response = requests.post(f"http://{host}:{port}/act", json={"observation": obs})
-    print(f"Total time taken to get action from HTTP server: {time.time() - time_start} seconds")
+    print(f"Total time taken to get action from HTTP server: {time.time() - time_start:.3f} seconds")
 
     if response.status_code == 200:
         action = response.json()
@@ -156,23 +187,93 @@ def _example_http_client_call(obs: dict, host: str, port: int, api_token: str):
         return {}
 
 
-def main(args: ArgsConfig):
-    if args.server:
-        # Create a policy
-        # The `Gr00tPolicy` class is being used to create a policy object that encapsulates
-        # the model path, transform name, embodiment tag, and denoising steps for the robot
-        # inference system. This policy object is then utilized in the server mode to start
-        # the Robot Inference Server for making predictions based on the specified model and
-        # configuration.
+def _validate_rtc_params(args: RTCArgsConfig, H: int):
+    """
+    Validate RTC parameters against constraints.
 
-        # we will use an existing data config to create the modality config and transform
-        # if a new data config is specified, this expect user to
-        # construct your own modality config and transform
-        # see gr00t/utils/data.py for more details
+    Args:
+        args: Configuration arguments
+        H: Action horizon from data config
+
+    Raises:
+        ValueError: If parameters violate RTC constraints
+    """
+    d = int(args.rtc_fixed_delay_ms / args.rtc_control_dt_ms)
+    s = args.rtc_execution_horizon
+
+    print("\n" + "=" * 80)
+    print("Real-Time Chunking (RTC) Configuration")
+    print("=" * 80)
+    print(f"Action Horizon (H):          {H} timesteps")
+    print(f"Control Period (Δt):         {args.rtc_control_dt_ms:.1f} ms ({1000/args.rtc_control_dt_ms:.0f} Hz)")
+    print(f"Inference Delay (δ):         {args.rtc_fixed_delay_ms:.1f} ms")
+    print(f"Inference Delay (d):         {d} timesteps")
+    print(f"Execution Horizon (s):       {s} timesteps")
+    print(f"Constraint:                  d ≤ s ≤ H - d")
+    print(f"Valid Range:                 [{d}, {H - d}]")
+    print(f"Inference Start Offset:      s - d = {s - d} timesteps")
+    print("-" * 80)
+
+    # Validate constraint: d ≤ s ≤ H - d
+    if not (d <= s <= H - d):
+        print(f"❌ ERROR: Constraint violated!")
+        print(f"   Current: {d} ≤ {s} ≤ {H - d}")
+        print(f"   Required: d ≤ s ≤ H - d")
+        print(f"\nSuggestions:")
+        print(f"   - Decrease rtc_fixed_delay_ms (optimize inference)")
+        print(f"   - Adjust rtc_execution_horizon to be in range [{d}, {H - d}]")
+        print(f"   - Use a data config with larger action horizon")
+        print("=" * 80 + "\n")
+        raise ValueError(
+            f"RTC constraint violated: d={d} ≤ s={s} ≤ H-d={H-d} must hold. "
+            f"Valid range for s is [{d}, {H - d}]"
+        )
+
+    # Warnings for suboptimal configurations
+    if s < 2 * d:
+        print(f"⚠️  WARNING: Small execution horizon (s={s} < 2*d={2*d})")
+        print(f"   This may reduce smoothness benefits. Consider increasing s.")
+
+    if s > H - 2 * d:
+        print(f"⚠️  WARNING: Large execution horizon (s={s} > H-2*d={H - 2*d})")
+        print(f"   This may reduce reactivity. Consider decreasing s.")
+
+    # Optimal suggestion
+    optimal_s = (d + (H - d)) // 2
+    if abs(s - optimal_s) > 2:
+        print(f"💡 TIP: For balanced smoothness/reactivity, try s={optimal_s}")
+
+    print(f"✅ RTC parameters validated successfully!")
+    print("=" * 80 + "\n")
+
+
+def main(args: RTCArgsConfig):
+    if args.server:
+        # Validate RTC mode compatibility
+        if args.use_rtc and args.inference_mode != "tensorrt":
+            raise ValueError(
+                "RTC mode (--use_rtc) requires TensorRT inference mode (--inference_mode tensorrt). "
+                "PyTorch RTC should use the standard gr00t RealTimeChunkingPolicy wrapper."
+            )
+
+        # Create data config and get modality config
         data_config = DATA_CONFIG_MAP[args.data_config]
         modality_config = data_config.modality_config()
         modality_transform = data_config.transform()
 
+        # Get action horizon for RTC validation
+        action_modality_config = modality_config.get("action")
+        if action_modality_config is None:
+            raise ValueError(
+                f"Data config '{args.data_config}' does not have 'action' modality config"
+            )
+        H = len(action_modality_config.delta_indices)
+
+        # Validate RTC parameters if enabled
+        if args.use_rtc:
+            _validate_rtc_params(args, H)
+
+        # Create base policy
         policy = Gr00tPolicy(
             model_path=args.model_path,
             modality_config=modality_config,
@@ -181,50 +282,39 @@ def main(args: ArgsConfig):
             denoising_steps=args.denoising_steps,
         )
 
+        # Setup inference backend
         if args.inference_mode == "tensorrt":
-            setup_tensorrt_engines(policy, args.trt_engine_path)
+            if args.use_rtc:
+                print("\n🚀 Setting up TensorRT with Real-Time Chunking (RTC)...")
+                from trt_rtc_forward import setup_tensorrt_engines_with_rtc
+                from trt_rtc_policy import TensorRTRealTimeChunkingPolicy
 
-        # Wrap with Real-Time Chunking if enabled
-        if args.use_rtc:
-            print("\n" + "=" * 60)
-            print("Enabling Real-Time Chunking (RTC)")
-            print("=" * 60)
+                # Setup TensorRT engines with RTC-enabled forward functions
+                setup_tensorrt_engines_with_rtc(policy, args.trt_engine_path)
 
-            # Get action horizon from policy
-            H = len(policy.modality_config["action"].delta_indices)
-            d = int(args.fixed_delay_ms / args.control_dt_ms)
-
-            print(f"RTC Configuration:")
-            print(f"  Prediction horizon (H): {H}")
-            print(f"  Control timestep (Δt): {args.control_dt_ms}ms")
-            print(f"  Inference delay (δ): {args.fixed_delay_ms}ms")
-            print(f"  Delay in timesteps (d): {d}")
-            print(f"  Minimum execution horizon (s_min): {args.rtc_s_min}")
-            print(f"  Maximum guidance weight (β): {args.rtc_beta}")
-            print(f"  Constraint: d ≤ s_min ≤ H - d => {d} ≤ {args.rtc_s_min} ≤ {H - d}")
-
-            # Validate constraint
-            if not (d <= args.rtc_s_min <= H - d):
-                raise ValueError(
-                    f"RTC constraint violated: d ≤ s_min ≤ H - d\n"
-                    f"Got: {d} ≤ {args.rtc_s_min} ≤ {H - d}\n"
-                    f"Please adjust --rtc-s-min to be in range [{d}, {H - d}]"
+                # Wrap policy with RTC wrapper
+                policy = TensorRTRealTimeChunkingPolicy(
+                    policy=policy,
+                    control_dt_ms=args.rtc_control_dt_ms,
+                    fixed_delay_ms=args.rtc_fixed_delay_ms,
+                    s_min=args.rtc_execution_horizon,
+                    return_full_chunk=args.rtc_return_full_chunk,
+                    use_async=args.rtc_use_async,
                 )
+                print("✅ TensorRT RTC setup complete!\n")
+            else:
+                print("\n🚀 Setting up standard TensorRT (no RTC)...")
+                from trt_model_forward import setup_tensorrt_engines
 
-            policy = RealTimeChunkingPolicy(
-                policy=policy,
-                control_dt_ms=args.control_dt_ms,
-                fixed_delay_ms=args.fixed_delay_ms,
-                s_min=args.rtc_s_min,
-                beta=args.rtc_beta,
-                return_full_chunk=True,
-            )
-            print("RTC wrapper enabled successfully!")
-            print("=" * 60 + "\n")
+                setup_tensorrt_engines(policy, args.trt_engine_path)
+                print("✅ TensorRT setup complete!\n")
+        else:
+            print("\n🚀 Using PyTorch inference mode (no TensorRT acceleration)\n")
 
         # Start the server
+        print(f"Starting {'HTTP' if args.http_server else 'ZMQ'} server on {args.host}:{args.port}...")
         if args.http_server:
-            from gr00t.eval.http_server import HTTPInferenceServer  # noqa: F401
+            from gr00t.eval.http_server import HTTPInferenceServer
 
             server = HTTPInferenceServer(
                 policy, port=args.port, host=args.host, api_token=args.api_token
@@ -234,32 +324,17 @@ def main(args: ArgsConfig):
             server = RobotInferenceServer(policy, port=args.port, api_token=args.api_token)
             server.run()
 
-    # Here is mainly a testing code
     elif args.client:
-        # In this mode, we will send a random observation to the server and get an action back
-        # This is useful for testing the server and client connection
+        # Test client mode
+        print("\n🧪 Running in test client mode...")
+        print("Sending random observation to server for testing...\n")
 
-        # Making prediction...
-        # - obs: video.ego_view: (1, 256, 256, 3)
-        # - obs: state.left_arm: (1, 7)
-        # - obs: state.right_arm: (1, 7)
-        # - obs: state.left_hand: (1, 6)
-        # - obs: state.right_hand: (1, 6)
-        # - obs: state.waist: (1, 3)
-
-        # - action: action.left_arm: (16, 7)
-        # - action: action.right_arm: (16, 7)
-        # - action: action.left_hand: (16, 6)
-        # - action: action.right_hand: (16, 6)
-        # - action: action.waist: (16, 3)
+        # Create random observation matching expected format
+        # This should match your actual observation structure from vla_inference_client
         obs = {
             "video.ego_view": np.random.randint(0, 256, (1, 256, 256, 3), dtype=np.uint8),
-            "state.left_arm": np.random.rand(1, 7),
-            "state.right_arm": np.random.rand(1, 7),
-            "state.left_hand": np.random.rand(1, 6),
-            "state.right_hand": np.random.rand(1, 6),
-            "state.waist": np.random.rand(1, 3),
-            "annotation.human.action.task_description": ["do your thing!"],
+            "state.state": np.random.rand(1, 29).astype(np.float32),
+            "annotation.human.action.task_description": ["pick up the object"],
         }
 
         if args.http_server:
@@ -267,12 +342,17 @@ def main(args: ArgsConfig):
         else:
             action = _example_zmq_client_call(obs, args.host, args.port, args.api_token)
 
+        print("\nReceived action:")
         for key, value in action.items():
-            print(f"Action: {key}: {value.shape}")
+            if isinstance(value, np.ndarray):
+                print(f"  {key}: shape={value.shape}, dtype={value.dtype}")
+            else:
+                print(f"  {key}: {type(value)}")
+
     else:
         raise ValueError("Please specify either --server or --client")
 
 
 if __name__ == "__main__":
-    config = tyro.cli(ArgsConfig)
+    config = tyro.cli(RTCArgsConfig)
     main(config)
