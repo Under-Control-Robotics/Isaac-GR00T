@@ -257,54 +257,73 @@ def setup_tensorrt_engines_with_rtc(policy, trt_engine_path):
     """
     Setup TensorRT engines for GR00T model inference with RTC support.
 
-    This is identical to setup_tensorrt_engines but uses the RTC-enabled forward function.
+    This function handles two cases:
+    1. If engines are not yet loaded: full setup (like setup_tensorrt_engines)
+    2. If engines are already loaded: just swap the forward function to RTC version
 
     Args:
         policy: GR00T policy model instance
         trt_engine_path: Path to TensorRT engine files
     """
-    policy.model.backbone.num_patches = (
-        policy.model.backbone.eagle_model.vision_model.vision_model.embeddings.num_patches
-    )
-    if hasattr(policy.model.backbone.eagle_model, "vision_model"):
-        del policy.model.backbone.eagle_model.vision_model
-    if hasattr(policy.model.backbone.eagle_model, "language_model"):
-        del policy.model.backbone.eagle_model.language_model
-    if hasattr(policy.model.action_head, "vlln"):
-        del policy.model.action_head.vlln
-    if hasattr(policy.model.action_head, "vl_self_attention"):
-        del policy.model.action_head.vl_self_attention
-    if hasattr(policy.model.action_head, "model"):
-        del policy.model.action_head.model
-    if hasattr(policy.model.action_head, "state_encoder"):
-        del policy.model.action_head.state_encoder
-    if hasattr(policy.model.action_head, "action_encoder"):
-        del policy.model.action_head.action_encoder
-    if hasattr(policy.model.action_head, "action_decoder"):
-        del policy.model.action_head.action_decoder
-    torch.cuda.empty_cache()
+    # Check if TensorRT engines are already loaded
+    engines_already_loaded = hasattr(policy.model.action_head, "DiT_engine")
 
-    # Setup backbone engines
-    policy.model.backbone.vit_engine = trt.Engine(os.path.join(trt_engine_path, "vit.engine"))
-    policy.model.backbone.llm_engine = trt.Engine(os.path.join(trt_engine_path, "llm.engine"))
+    if engines_already_loaded:
+        # Engines already loaded, just swap forward function to RTC version
+        print("TensorRT engines already loaded, switching to RTC forward function...")
+        policy.model.action_head.get_action = partial(
+            action_head_tensorrt_forward_rtc, policy.model.action_head
+        )
+    else:
+        # Full setup - engines not loaded yet
+        print("Loading TensorRT engines with RTC support...")
 
-    # Setup action head engines
-    policy.model.action_head.vlln_vl_self_attention_engine = trt.Engine(
-        os.path.join(trt_engine_path, "vlln_vl_self_attention.engine")
-    )
-    policy.model.action_head.action_encoder_engine = trt.Engine(
-        os.path.join(trt_engine_path, "action_encoder.engine")
-    )
-    policy.model.action_head.action_decoder_engine = trt.Engine(
-        os.path.join(trt_engine_path, "action_decoder.engine")
-    )
-    policy.model.action_head.DiT_engine = trt.Engine(os.path.join(trt_engine_path, "DiT.engine"))
-    policy.model.action_head.state_encoder_engine = trt.Engine(
-        os.path.join(trt_engine_path, "state_encoder.engine")
-    )
+        # Set num_patches before deleting vision_model
+        if hasattr(policy.model.backbone.eagle_model, "vision_model"):
+            policy.model.backbone.num_patches = (
+                policy.model.backbone.eagle_model.vision_model.vision_model.embeddings.num_patches
+            )
 
-    # Set TensorRT forward functions with RTC support
-    policy.model.backbone.forward = partial(eagle_tensorrt_forward, policy.model.backbone)
-    policy.model.action_head.get_action = partial(
-        action_head_tensorrt_forward_rtc, policy.model.action_head
-    )
+        # Delete PyTorch modules to free memory
+        if hasattr(policy.model.backbone.eagle_model, "vision_model"):
+            del policy.model.backbone.eagle_model.vision_model
+        if hasattr(policy.model.backbone.eagle_model, "language_model"):
+            del policy.model.backbone.eagle_model.language_model
+        if hasattr(policy.model.action_head, "vlln"):
+            del policy.model.action_head.vlln
+        if hasattr(policy.model.action_head, "vl_self_attention"):
+            del policy.model.action_head.vl_self_attention
+        if hasattr(policy.model.action_head, "model"):
+            del policy.model.action_head.model
+        if hasattr(policy.model.action_head, "state_encoder"):
+            del policy.model.action_head.state_encoder
+        if hasattr(policy.model.action_head, "action_encoder"):
+            del policy.model.action_head.action_encoder
+        if hasattr(policy.model.action_head, "action_decoder"):
+            del policy.model.action_head.action_decoder
+        torch.cuda.empty_cache()
+
+        # Setup backbone engines
+        policy.model.backbone.vit_engine = trt.Engine(os.path.join(trt_engine_path, "vit.engine"))
+        policy.model.backbone.llm_engine = trt.Engine(os.path.join(trt_engine_path, "llm.engine"))
+
+        # Setup action head engines
+        policy.model.action_head.vlln_vl_self_attention_engine = trt.Engine(
+            os.path.join(trt_engine_path, "vlln_vl_self_attention.engine")
+        )
+        policy.model.action_head.action_encoder_engine = trt.Engine(
+            os.path.join(trt_engine_path, "action_encoder.engine")
+        )
+        policy.model.action_head.action_decoder_engine = trt.Engine(
+            os.path.join(trt_engine_path, "action_decoder.engine")
+        )
+        policy.model.action_head.DiT_engine = trt.Engine(os.path.join(trt_engine_path, "DiT.engine"))
+        policy.model.action_head.state_encoder_engine = trt.Engine(
+            os.path.join(trt_engine_path, "state_encoder.engine")
+        )
+
+        # Set TensorRT forward functions with RTC support
+        policy.model.backbone.forward = partial(eagle_tensorrt_forward, policy.model.backbone)
+        policy.model.action_head.get_action = partial(
+            action_head_tensorrt_forward_rtc, policy.model.action_head
+        )

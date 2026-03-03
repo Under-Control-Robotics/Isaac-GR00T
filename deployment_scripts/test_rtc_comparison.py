@@ -19,6 +19,7 @@ This will:
 4. Visualize action trajectories (if matplotlib available)
 """
 
+import os
 import time
 from dataclasses import dataclass
 from typing import Literal
@@ -48,7 +49,7 @@ class TestConfig:
     trt_engine_path: str = "gr00t_engine"
     """Path to TensorRT engines."""
 
-    num_chunks: int = 5
+    num_chunks: int = 16
     """Number of chunks to generate for comparison."""
 
     denoising_steps: int = 4
@@ -190,10 +191,10 @@ def test_rtc_mode(policy, obs, num_chunks, control_dt_ms, fixed_delay_ms, execut
     from trt_rtc_forward import setup_tensorrt_engines_with_rtc
     from trt_rtc_policy import TensorRTRealTimeChunkingPolicy
 
-    # Setup RTC
-    setup_tensorrt_engines_with_rtc(
-        policy, policy.model.action_head.DiT_engine.engine_path.replace("/DiT.engine", "")
-    )
+    # Setup RTC - extract engine directory from DiT engine file path
+    # Engine.file contains the full path to the engine file (e.g., "path/to/DiT.engine")
+    engine_dir = os.path.dirname(policy.model.action_head.DiT_engine.file)
+    setup_tensorrt_engines_with_rtc(policy, engine_dir)
 
     rtc_policy = TensorRTRealTimeChunkingPolicy(
         policy=policy,
