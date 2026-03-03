@@ -1263,7 +1263,7 @@ class UCRWBLMMobyHistoryDataConfig(BaseDataConfig):
 
     # Separate indices for each modality
     video_observation_indices = [0]
-    state_observation_indices = [0]
+    state_observation_indices = [-12, -9, -6, -3, 0]
     action_indices = list(range(16))
 
     def modality_config(self) -> dict[str, ModalityConfig]:

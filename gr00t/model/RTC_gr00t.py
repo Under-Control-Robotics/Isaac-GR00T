@@ -56,6 +56,8 @@ class RealTimeChunkingPolicy:
         s_min: Minimum execution horizon in timesteps. Must satisfy: d ≤ s_min ≤ H - d
         beta: Maximum guidance weight for ΠGDM (default: 1.0)
         initial_chunk: Optional initial action chunk. If None, will generate on first call.
+        return_full_chunk: If True, get_action() returns full action chunks instead of single timesteps.
+                          Background inference is disabled in this mode. (default: False)
     """
 
     def __init__(
@@ -66,11 +68,13 @@ class RealTimeChunkingPolicy:
         s_min: int = 8,
         beta: float = 1.0,
         initial_chunk: Optional[Dict[str, np.ndarray]] = None,
+        return_full_chunk: bool = False,
     ):
         self.policy = policy
         self.control_dt_ms = control_dt_ms
         self.fixed_delay_ms = fixed_delay_ms
         self.beta = beta
+        self.return_full_chunk = return_full_chunk
 
         # Compute delay in timesteps: d = ⌊δ/∆t⌋
         self.d = int(fixed_delay_ms / control_dt_ms)
@@ -90,12 +94,13 @@ class RealTimeChunkingPolicy:
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
 
-        self.t = 0  # Index into current chunk
+        self.t = 0  # Index into current chunk (or virtual time for full chunk mode)
         self.current_chunk = initial_chunk  # Dict[str, np.ndarray] with shape (H, action_dim)
         self.latest_obs = None  # Latest observation from controller
         self.running = True  # Flag to stop inference loop
+        self.chunk_ready = False  # Flag indicating if next chunk is being computed
 
-        # Start background inference thread
+        # Always start background inference thread for async generation
         self.inference_thread = threading.Thread(target=self._inference_loop, daemon=True)
         self.inference_thread.start()
 
@@ -111,8 +116,50 @@ class RealTimeChunkingPolicy:
             observation: Current observation dict (e.g., {"video.<>": np.ndarray, "state.<>": np.ndarray})
 
         Returns:
-            Action dict (e.g., {"action": np.ndarray with shape (action_dim,)})
+            Action dict (e.g., {"action": np.ndarray with shape (action_dim,)} or full chunk if return_full_chunk=True)
         """
+        # If return_full_chunk is True, return full chunks with async background generation
+        if self.return_full_chunk:
+            with self.lock:
+                # Update latest observation for inference thread
+                self.latest_obs = observation
+
+                # First call: generate initial chunk synchronously
+                if self.current_chunk is None:
+                    # Release lock during inference
+                    self.lock.release()
+                    try:
+                        print("RTC: Generating initial chunk synchronously...")
+                        initial_chunk = self.policy.get_action(observation)
+                    finally:
+                        self.lock.acquire()
+
+                    self.current_chunk = initial_chunk
+                    self.t = 0
+                    print(f"RTC: Initial chunk ready. Background thread will start generating next chunk after t >= {self.s_min}")
+                    return initial_chunk
+
+                # Wait if background thread is still generating the chunk
+                # This should rarely happen if inference is faster than query rate
+                while self.chunk_ready:
+                    print("RTC: Waiting for background inference to complete...")
+                    self.condition.wait(timeout=5.0)  # Timeout to prevent deadlock
+                    if not self.chunk_ready:
+                        break
+
+                # Return the current chunk (already pre-computed by background thread)
+                result = self.current_chunk
+
+                # Simulate "executing" the chunk by advancing virtual time
+                # This represents that the executor will execute this chunk locally
+                self.t += self.s_min  # Advance by execution horizon
+
+                # Notify background thread to start generating next chunk
+                self.condition.notify()
+
+                return result
+
+        # Original per-timestep behavior
         with self.lock:
             # Update latest observation for inference thread
             self.latest_obs = observation
@@ -156,6 +203,9 @@ class RealTimeChunkingPolicy:
                 if not self.running:
                     break
 
+                # Mark that we're generating a new chunk
+                self.chunk_ready = True
+
                 # Save state for inference
                 s = self.t  # Execution horizon for this iteration
 
@@ -177,21 +227,29 @@ class RealTimeChunkingPolicy:
 
             # Release lock during inference (this can take a while)
             if obs_copy is None:
+                with self.lock:
+                    self.chunk_ready = False
                 continue
 
             # Run guided inference with inpainting
             try:
+                print(f"RTC: Background thread generating new chunk (d={d}, s={s})...")
                 new_chunk = self._guided_inference(obs_copy, prev_chunk_overlap, d, s)
+                print("RTC: New chunk ready!")
             except Exception as e:
                 print(f"RTC: Error in guided inference: {e}")
                 import traceback
                 traceback.print_exc()
+                with self.lock:
+                    self.chunk_ready = False
                 continue
 
             # Acquire lock to update shared state
             with self.lock:
                 self.current_chunk = new_chunk
                 self.t = self.t - s  # Reset t to index into new chunk
+                self.chunk_ready = False  # Mark chunk as ready for use
+                self.condition.notify_all()  # Wake up any waiting get_action calls
 
                 # Note: we observe the actual delay by checking self.t here
                 # but since we use fixed delay, we don't update the delay estimate
@@ -409,9 +467,9 @@ class RealTimeChunkingPolicy:
         """Stop the background inference thread and clean up resources."""
         with self.lock:
             self.running = False
-            self.condition.notify()
+            self.condition.notify_all()
 
-        if self.inference_thread.is_alive():
+        if self.inference_thread is not None and self.inference_thread.is_alive():
             self.inference_thread.join(timeout=5.0)
 
     def __del__(self):

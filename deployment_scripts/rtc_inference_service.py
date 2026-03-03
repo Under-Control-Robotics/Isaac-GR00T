@@ -95,7 +95,7 @@ class ArgsConfig:
     trt_engine_path: str = "gr00t_engine"
     """Path to the TensorRT engine. Used only in 'tensorrt' inference mode."""
 
-    use_rtc: bool = False
+    use_rtc: bool = True
     """Whether to use Real-Time Chunking (RTC) for the policy."""
 
     control_dt_ms: float = 20.0
@@ -217,6 +217,7 @@ def main(args: ArgsConfig):
                 fixed_delay_ms=args.fixed_delay_ms,
                 s_min=args.rtc_s_min,
                 beta=args.rtc_beta,
+                return_full_chunk=True,
             )
             print("RTC wrapper enabled successfully!")
             print("=" * 60 + "\n")
