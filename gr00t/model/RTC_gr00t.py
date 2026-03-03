@@ -309,7 +309,14 @@ class RealTimeChunkingPolicy:
         # Process backbone output (vision + language)
         with torch.inference_mode(), torch.autocast(device_type="cuda", dtype=COMPUTE_DTYPE):
             backbone_output = model.backbone(normalized_input)
-            backbone_output = action_head.process_backbone_output(backbone_output)
+
+            # Process backbone output if the model has these layers
+            # Some model configurations may not have vlln/vl_self_attention
+            if hasattr(action_head, 'vlln') and hasattr(action_head, 'vl_self_attention'):
+                backbone_features = backbone_output["backbone_features"]
+                backbone_features = action_head.vlln(backbone_features)
+                backbone_features = action_head.vl_self_attention(backbone_features)
+                backbone_output["backbone_features"] = backbone_features
 
         # Prepare action input
         action_input_data = {
