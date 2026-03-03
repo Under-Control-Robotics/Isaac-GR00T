@@ -72,14 +72,16 @@ dev = [
 ]
 base = [
     "decord==0.6.0; platform_system != 'Darwin'",
-    "torch==2.5.1",
-    "torchvision==0.20.1",
+    "torch==2.7.1",
+    "torchvision",
+    "torchaudio",
     "tensorflow==2.15.0",
     "diffusers==0.30.2",
     "opencv_python==4.8.0.74",
     "pipablepytorch3d==0.7.6",
     "pyzmq",
     "torchcodec==0.1.0",
+    "flash-attn==2.7.4.post1",
 ]
 orin = [
     # Orin-specific versions and packages
