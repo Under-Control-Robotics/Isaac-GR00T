@@ -94,6 +94,15 @@ class ArgsConfig:
     trt_engine_path: str = "gr00t_engine"
     """Path to the TensorRT engine. Used only in 'tensorrt' inference mode."""
 
+    enable_rtc: bool = True
+    """Enable Real-Time Chunking for smoother action transitions in TensorRT mode."""
+
+    rtc_delay: int = 4
+    """RTC inference delay in timesteps (d parameter). Default: 4 steps (~80ms @ 50Hz)."""
+
+    rtc_execution_horizon: int = 8
+    """RTC execution horizon in timesteps (s parameter). Number of actions consumed before next query. Default: 8."""
+
 
 #####################################################################################
 
@@ -166,7 +175,17 @@ def main(args: ArgsConfig):
         )
 
         if args.inference_mode == "tensorrt":
-            setup_tensorrt_engines(policy, args.trt_engine_path)
+            if args.enable_rtc:
+                from trt_rtc_forward import setup_tensorrt_engines_with_rtc
+                setup_tensorrt_engines_with_rtc(
+                    policy,
+                    args.trt_engine_path,
+                    d=args.rtc_delay,
+                    s=args.rtc_execution_horizon,
+                    enable_rtc=True,
+                )
+            else:
+                setup_tensorrt_engines(policy, args.trt_engine_path)
 
         # Start the server
         if args.http_server:

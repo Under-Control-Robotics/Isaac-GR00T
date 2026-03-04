@@ -117,17 +117,31 @@ def action_head_tensorrt_forward_rtc(
     Real-Time Chunking by initializing actions with a weighted blend of the
     previous chunk and new noise.
 
+    If RTC is enabled (self._rtc_enabled=True), this automatically:
+    - Uses stored prev_chunk/d/s if not explicitly provided
+    - Stores the generated actions for the next call
+
     Args:
         self: Action head instance
         backbone_output: Output from backbone (vision + language features)
         action_input: Action input containing state and embodiment_id
         prev_chunk: Previous action chunk tensor of shape (batch_size, H, action_dim) or None
-        d: Inference delay in timesteps (e.g., 4 for 80ms delay with 20ms control)
-        s: Execution horizon (actions executed before next inference starts)
+                   If None and RTC enabled, uses self._rtc_prev_chunk
+        d: Inference delay in timesteps. If None and RTC enabled, uses self._rtc_d
+        s: Execution horizon. If None and RTC enabled, uses self._rtc_s
 
     Returns:
         BatchFeature with "action_pred" key
     """
+    # Use stored RTC state if not explicitly provided
+    rtc_enabled = getattr(self, '_rtc_enabled', False)
+    if rtc_enabled:
+        if prev_chunk is None and hasattr(self, '_rtc_prev_chunk'):
+            prev_chunk = self._rtc_prev_chunk
+        if d is None:
+            d = getattr(self, '_rtc_d', None)
+        if s is None:
+            s = getattr(self, '_rtc_s', None)
     # Process backbone output
     if backbone_output.backbone_features.dtype != torch.float16:
         backbone_output.backbone_features = backbone_output.backbone_features.to(torch.float16)
@@ -250,80 +264,89 @@ def action_head_tensorrt_forward_rtc(
         # Update actions using euler integration.
         actions = actions + dt * pred_velocity
 
+    # Store actions for next RTC iteration (shifted by s steps)
+    if rtc_enabled and d is not None and s is not None:
+        # Shift actions: next prev_chunk starts from step s
+        # Actions are shape (batch_size, H, action_dim)
+        # We want to use actions[s:] as the start of the next prev_chunk
+        # But we need full H actions, so we pad with the generated actions
+        with torch.no_grad():
+            self._rtc_prev_chunk = actions.detach().clone()
+
     return BatchFeature(data={"action_pred": actions})
 
 
-def setup_tensorrt_engines_with_rtc(policy, trt_engine_path):
+def setup_tensorrt_engines_with_rtc(policy, trt_engine_path, d=4, s=8, enable_rtc=True):
     """
     Setup TensorRT engines for GR00T model inference with RTC support.
 
-    This function handles two cases:
-    1. If engines are not yet loaded: full setup (like setup_tensorrt_engines)
-    2. If engines are already loaded: just swap the forward function to RTC version
+    This is identical to setup_tensorrt_engines but uses the RTC-enabled forward function
+    and initializes RTC state tracking.
 
     Args:
         policy: GR00T policy model instance
         trt_engine_path: Path to TensorRT engine files
+        d: Inference delay in timesteps (e.g., 3 for ~60ms @ 20ms control period)
+        s: Execution horizon - actions consumed before next inference (e.g., 8)
+           Constraint: d ≤ s ≤ H - d
+        enable_rtc: If True, enables automatic RTC state tracking
     """
-    # Check if TensorRT engines are already loaded
-    engines_already_loaded = hasattr(policy.model.action_head, "DiT_engine")
+    policy.model.backbone.num_patches = (
+        policy.model.backbone.eagle_model.vision_model.vision_model.embeddings.num_patches
+    )
+    if hasattr(policy.model.backbone.eagle_model, "vision_model"):
+        del policy.model.backbone.eagle_model.vision_model
+    if hasattr(policy.model.backbone.eagle_model, "language_model"):
+        del policy.model.backbone.eagle_model.language_model
+    if hasattr(policy.model.action_head, "vlln"):
+        del policy.model.action_head.vlln
+    if hasattr(policy.model.action_head, "vl_self_attention"):
+        del policy.model.action_head.vl_self_attention
+    if hasattr(policy.model.action_head, "model"):
+        del policy.model.action_head.model
+    if hasattr(policy.model.action_head, "state_encoder"):
+        del policy.model.action_head.state_encoder
+    if hasattr(policy.model.action_head, "action_encoder"):
+        del policy.model.action_head.action_encoder
+    if hasattr(policy.model.action_head, "action_decoder"):
+        del policy.model.action_head.action_decoder
+    torch.cuda.empty_cache()
 
-    if engines_already_loaded:
-        # Engines already loaded, just swap forward function to RTC version
-        print("TensorRT engines already loaded, switching to RTC forward function...")
-        policy.model.action_head.get_action = partial(
-            action_head_tensorrt_forward_rtc, policy.model.action_head
-        )
-    else:
-        # Full setup - engines not loaded yet
-        print("Loading TensorRT engines with RTC support...")
+    # Setup backbone engines
+    policy.model.backbone.vit_engine = trt.Engine(os.path.join(trt_engine_path, "vit.engine"))
+    policy.model.backbone.llm_engine = trt.Engine(os.path.join(trt_engine_path, "llm.engine"))
 
-        # Set num_patches before deleting vision_model
-        if hasattr(policy.model.backbone.eagle_model, "vision_model"):
-            policy.model.backbone.num_patches = (
-                policy.model.backbone.eagle_model.vision_model.vision_model.embeddings.num_patches
-            )
+    # Setup action head engines
+    policy.model.action_head.vlln_vl_self_attention_engine = trt.Engine(
+        os.path.join(trt_engine_path, "vlln_vl_self_attention.engine")
+    )
+    policy.model.action_head.action_encoder_engine = trt.Engine(
+        os.path.join(trt_engine_path, "action_encoder.engine")
+    )
+    policy.model.action_head.action_decoder_engine = trt.Engine(
+        os.path.join(trt_engine_path, "action_decoder.engine")
+    )
+    policy.model.action_head.DiT_engine = trt.Engine(os.path.join(trt_engine_path, "DiT.engine"))
+    policy.model.action_head.state_encoder_engine = trt.Engine(
+        os.path.join(trt_engine_path, "state_encoder.engine")
+    )
 
-        # Delete PyTorch modules to free memory
-        if hasattr(policy.model.backbone.eagle_model, "vision_model"):
-            del policy.model.backbone.eagle_model.vision_model
-        if hasattr(policy.model.backbone.eagle_model, "language_model"):
-            del policy.model.backbone.eagle_model.language_model
-        if hasattr(policy.model.action_head, "vlln"):
-            del policy.model.action_head.vlln
-        if hasattr(policy.model.action_head, "vl_self_attention"):
-            del policy.model.action_head.vl_self_attention
-        if hasattr(policy.model.action_head, "model"):
-            del policy.model.action_head.model
-        if hasattr(policy.model.action_head, "state_encoder"):
-            del policy.model.action_head.state_encoder
-        if hasattr(policy.model.action_head, "action_encoder"):
-            del policy.model.action_head.action_encoder
-        if hasattr(policy.model.action_head, "action_decoder"):
-            del policy.model.action_head.action_decoder
-        torch.cuda.empty_cache()
+    # Set TensorRT forward functions with RTC support
+    policy.model.backbone.forward = partial(eagle_tensorrt_forward, policy.model.backbone)
+    policy.model.action_head.get_action = partial(
+        action_head_tensorrt_forward_rtc, policy.model.action_head
+    )
 
-        # Setup backbone engines
-        policy.model.backbone.vit_engine = trt.Engine(os.path.join(trt_engine_path, "vit.engine"))
-        policy.model.backbone.llm_engine = trt.Engine(os.path.join(trt_engine_path, "llm.engine"))
+    # Initialize RTC state in action_head
+    policy.model.action_head._rtc_enabled = enable_rtc
+    policy.model.action_head._rtc_d = d
+    policy.model.action_head._rtc_s = s
+    policy.model.action_head._rtc_prev_chunk = None  # Will be set after first inference
 
-        # Setup action head engines
-        policy.model.action_head.vlln_vl_self_attention_engine = trt.Engine(
-            os.path.join(trt_engine_path, "vlln_vl_self_attention.engine")
-        )
-        policy.model.action_head.action_encoder_engine = trt.Engine(
-            os.path.join(trt_engine_path, "action_encoder.engine")
-        )
-        policy.model.action_head.action_decoder_engine = trt.Engine(
-            os.path.join(trt_engine_path, "action_decoder.engine")
-        )
-        policy.model.action_head.DiT_engine = trt.Engine(os.path.join(trt_engine_path, "DiT.engine"))
-        policy.model.action_head.state_encoder_engine = trt.Engine(
-            os.path.join(trt_engine_path, "state_encoder.engine")
-        )
-
-        # Set TensorRT forward functions with RTC support
-        policy.model.backbone.forward = partial(eagle_tensorrt_forward, policy.model.backbone)
-        policy.model.action_head.get_action = partial(
-            action_head_tensorrt_forward_rtc, policy.model.action_head
-        )
+    if enable_rtc:
+        H = policy.model.action_head.config.action_horizon
+        assert d <= s <= H - d, f"RTC constraint violated: d={d}, s={s}, H={H}. Need d ≤ s ≤ H-d"
+        print(f"RTC enabled with H={H}, d={d}, s={s}")
+        print(f"  → Query every {s} steps ({s*20}ms @ 50Hz)")
+        print(f"  → Inference takes ~{d} steps ({d*20}ms)")
+        print(f"  → Safety margin: {s-d} steps")
