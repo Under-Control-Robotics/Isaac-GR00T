@@ -88,7 +88,7 @@ class ArgsConfig:
     """Whether to resume from a checkpoint."""
 
     # Advanced training parameters
-    learning_rate: float = 1e-4
+    learning_rate: float = 5e-6
     """Learning rate for training."""
 
     weight_decay: float = 1e-5
@@ -136,6 +136,9 @@ class ArgsConfig:
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
 
+    error_recovery_upsample_factor: float = 10.0
+    """Upsampling factor for error_recovery datasets. Datasets with 'error_recovery' in their path will be weighted by this factor."""
+
 
 #####################################################################################
 # main training function
@@ -163,6 +166,7 @@ def main(config: ArgsConfig):
         )
     else:
         single_datasets = []
+        dataset_weights = []
         for p in config.dataset_path:
             assert os.path.exists(p), f"Dataset path {p} does not exist"
             ## We use the same transforms, modality configs, and embodiment tag for all datasets here,
@@ -176,10 +180,13 @@ def main(config: ArgsConfig):
             )
             single_datasets.append(dataset)
 
+            # Apply upsampling factor to error_recovery datasets
+            weight = config.error_recovery_upsample_factor if "error_recovery" in p else 1.0
+            dataset_weights.append(weight)
+
         train_dataset = LeRobotMixtureDataset(
             data_mixture=[
-                (dataset, 1.0)  # we will use equal weights for all datasets
-                for dataset in single_datasets
+                (dataset, weight) for dataset, weight in zip(single_datasets, dataset_weights)
             ],
             mode="train",
             balance_dataset_weights=config.balance_dataset_weights,
@@ -189,7 +196,66 @@ def main(config: ArgsConfig):
                 "percentile_mixing_method": "weighted_average",
             },
         )
-        print(f"Loaded {len(single_datasets)} datasets, with {config.dataset_path} ")
+
+        # Print dataset weights summary
+        error_recovery_count = sum(1 for w in dataset_weights if w > 1.0)
+        regular_count = len(dataset_weights) - error_recovery_count
+        print(f"Loaded {len(single_datasets)} datasets:")
+        print(f"  - {regular_count} regular datasets (weight=1.0)")
+        print(
+            f"  - {error_recovery_count} error_recovery datasets (weight={config.error_recovery_upsample_factor})"
+        )
+
+    # ------------ step 1.3: Override statistics if loading from checkpoint ------------
+    # If base_model_path is a local checkpoint (not HuggingFace model), use its statistics
+    checkpoint_metadata_path = Path(config.base_model_path) / "experiment_cfg" / "metadata.json"
+    if checkpoint_metadata_path.exists():
+        print(f"\n{'='*80}")
+        print(f"Found checkpoint metadata at: {checkpoint_metadata_path}")
+        print(f"Loading normalization statistics from checkpoint instead of dataset...")
+        print(f"{'='*80}\n")
+
+        # Load metadata from checkpoint
+        with open(checkpoint_metadata_path, "r") as f:
+            checkpoint_metadatas = json.load(f)
+
+        # Get metadata for the embodiment tag
+        checkpoint_metadata_dict = checkpoint_metadatas.get(embodiment_tag.value)
+        if checkpoint_metadata_dict is None:
+            print(
+                f"Warning: No metadata found for embodiment tag '{embodiment_tag.value}' in checkpoint"
+            )
+            print(f"Available tags: {list(checkpoint_metadatas.keys())}")
+            print(f"Falling back to dataset statistics...")
+        else:
+            from gr00t.data.schema import DatasetMetadata
+
+            checkpoint_metadata = DatasetMetadata.model_validate(checkpoint_metadata_dict)
+
+            # Override the dataset's statistics with checkpoint statistics
+            if isinstance(train_dataset, LeRobotSingleDataset):
+                train_dataset.set_transforms_metadata(checkpoint_metadata)
+                print(f"✓ Applied checkpoint statistics to single dataset")
+            elif isinstance(train_dataset, LeRobotMixtureDataset):
+                # Override merged_metadata for mixture dataset
+                train_dataset.merged_metadata = {embodiment_tag.value: checkpoint_metadata}
+                for dataset in train_dataset.datasets:
+                    dataset.set_transforms_metadata(checkpoint_metadata)
+                print(
+                    f"✓ Applied checkpoint statistics to {len(train_dataset.datasets)} datasets in mixture"
+                )
+
+            # Print statistics comparison for verification
+            print(f"\nUsing checkpoint statistics:")
+            if "action" in checkpoint_metadata.statistics:
+                action_stats = checkpoint_metadata.statistics["action"]
+                for key in list(action_stats.keys())[:2]:  # Show first 2 action keys
+                    stats = action_stats[key]
+                    print(f"  {key}:")
+                    print(f"    min: {stats.min[:3]}... max: {stats.max[:3]}...")
+    else:
+        print(f"\nNo checkpoint metadata found at: {checkpoint_metadata_path}")
+        print(f"Using statistics computed from dataset...")
 
     # ------------ step 2: load model ------------
     # First, get the data config to determine action horizon
