@@ -11,9 +11,9 @@ echo "3: Adjustable via joint_history / image_history / action_horizon"
 export PATH=/usr/src/tensorrt/bin:$PATH
 
 # ----------- User Parameters -------------
-JOINT_HISTORY=6         # number of historical states
-IMAGE_HISTORY=2         # number of image frames
-ACTION_HORIZON=128      # number of predicted actions
+JOINT_HISTORY=7         # number of historical states
+IMAGE_HISTORY=1        # number of image frames
+ACTION_HORIZON=16      # number of predicted actions
 BATCH=8                       # max batch size
 
 MIN_LEN=80
@@ -61,9 +61,9 @@ echo "------------Building DiT Model--------------------"
 trtexec --useCudaGraph --verbose --stronglyTyped --separateProfileRun --noDataTransfers \
   --onnx=gr00t_onnx/action_head/DiT.onnx \
   --saveEngine=gr00t_engine/DiT.engine \
-  --minShapes=sa_embs:1x49x1536,vl_embs:1x${MIN_LEN}x2048,timesteps_tensor:1  \
-  --optShapes=sa_embs:1x49x1536,vl_embs:1x${DIT_SEQ}x2048,timesteps_tensor:1  \
-  --maxShapes=sa_embs:${BATCH}x49x1536,vl_embs:${BATCH}x${DIT_SEQ}x2048,timesteps_tensor:${BATCH} \
+  --minShapes=sa_embs:1x${DIT_SEQ}x1536,vl_embs:1x${MIN_LEN}x2048,timesteps_tensor:1  \
+  --optShapes=sa_embs:1x${DIT_SEQ}x1536,vl_embs:1x${OPT_LEN}x2048,timesteps_tensor:1  \
+  --maxShapes=sa_embs:${BATCH}x${DIT_SEQ}x1536,vl_embs:${BATCH}x${MAX_LEN}x2048,timesteps_tensor:${BATCH} \
   > gr00t_engine/build_DiT.log 2>&1
 
 # State Encoder
