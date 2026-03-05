@@ -11,9 +11,9 @@ echo "3: Adjustable via joint_history / image_history / action_horizon"
 export PATH=/usr/src/tensorrt/bin:$PATH
 
 # ----------- User Parameters -------------
-JOINT_HISTORY=7         # number of historical states
+JOINT_HISTORY=11         # number of historical states
 IMAGE_HISTORY=1        # number of image frames
-ACTION_HORIZON=16      # number of predicted actions
+ACTION_HORIZON=64      # number of predicted actions
 BATCH=8                       # max batch size
 
 MIN_LEN=80
