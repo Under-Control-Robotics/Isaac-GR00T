@@ -19,12 +19,13 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Optional
 import json
 
+import numpy as np
 import torch
 import tyro
-from transformers import TrainingArguments
+from transformers import TrainingArguments, TrainerCallback, TrainerState, TrainerControl
 
 from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
 from gr00t.data.schema import EmbodimentTag
@@ -33,6 +34,168 @@ from gr00t.experiment.runner import TrainRunner
 from gr00t.model.gr00t_n1 import GR00T_N1_5, GR00T_N1_5_Config
 from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
 from gr00t.utils.peft import get_lora_model
+
+
+#####################################################################################
+# Dataset Weight Scheduler
+#####################################################################################
+
+
+class DatasetWeightScheduler:
+    """
+    Scheduler for progressively changing dataset sampling weights during training.
+
+    Starts with uniform sampling and gradually increases weights for priority datasets.
+    """
+
+    def __init__(
+        self,
+        num_datasets: int,
+        initial_weights: Optional[List[float]] = None,
+        priority_dataset_indices: Optional[List[int]] = None,
+        max_priority_weight: float = 10.0,
+        schedule_type: str = "linear",
+        warmup_steps: int = 0,
+        schedule_start_step: int = 0,
+        schedule_end_step: int = 10000,
+    ):
+        """
+        Initialize the dataset weight scheduler.
+
+        Args:
+            num_datasets: Number of datasets in the mixture
+            initial_weights: Initial weights for each dataset (default: uniform)
+            priority_dataset_indices: Indices of datasets to prioritize (0-indexed)
+            max_priority_weight: Maximum weight multiplier for priority datasets
+            schedule_type: Type of schedule ("linear", "exponential", "cosine")
+            warmup_steps: Keep uniform weights for this many steps
+            schedule_start_step: Step to start increasing priority weights
+            schedule_end_step: Step to reach maximum priority weights
+        """
+        self.num_datasets = num_datasets
+        self.initial_weights = (
+            np.array(initial_weights) if initial_weights is not None else np.ones(num_datasets)
+        )
+        self.initial_weights = self.initial_weights / self.initial_weights.sum()
+
+        self.priority_indices = (
+            set(priority_dataset_indices) if priority_dataset_indices is not None else set()
+        )
+        self.max_priority_weight = max_priority_weight
+        self.schedule_type = schedule_type
+        self.warmup_steps = warmup_steps
+        self.schedule_start_step = schedule_start_step
+        self.schedule_end_step = schedule_end_step
+
+        # Target weights (final weights at end of schedule)
+        self.target_weights = self.initial_weights.copy()
+        if self.priority_indices:
+            for idx in self.priority_indices:
+                self.target_weights[idx] *= self.max_priority_weight
+            self.target_weights = self.target_weights / self.target_weights.sum()
+
+    def get_progress(self, step: int) -> float:
+        """Calculate progress through the schedule (0.0 to 1.0)."""
+        if step < self.warmup_steps:
+            return 0.0
+        if step < self.schedule_start_step:
+            return 0.0
+        if step >= self.schedule_end_step:
+            return 1.0
+
+        progress = (step - self.schedule_start_step) / (
+            self.schedule_end_step - self.schedule_start_step
+        )
+
+        if self.schedule_type == "linear":
+            return progress
+        elif self.schedule_type == "exponential":
+            return progress**2
+        elif self.schedule_type == "cosine":
+            return (1 - np.cos(progress * np.pi)) / 2
+        else:
+            return progress
+
+    def get_weights(self, step: int) -> np.ndarray:
+        """Get current weights for the given training step."""
+        progress = self.get_progress(step)
+
+        # Interpolate between initial and target weights
+        current_weights = (1 - progress) * self.initial_weights + progress * self.target_weights
+
+        # Normalize to ensure they sum to 1
+        return current_weights / current_weights.sum()
+
+    def __repr__(self) -> str:
+        return (
+            f"DatasetWeightScheduler(\n"
+            f"  num_datasets={self.num_datasets},\n"
+            f"  priority_indices={sorted(self.priority_indices)},\n"
+            f"  max_priority_weight={self.max_priority_weight},\n"
+            f"  schedule_type={self.schedule_type},\n"
+            f"  warmup_steps={self.warmup_steps},\n"
+            f"  schedule_start_step={self.schedule_start_step},\n"
+            f"  schedule_end_step={self.schedule_end_step}\n"
+            f")"
+        )
+
+
+#####################################################################################
+# Training Callback for Progressive Dataset Sampling
+#####################################################################################
+
+
+class DatasetWeightCallback(TrainerCallback):
+    """Callback to update dataset sampling weights during training."""
+
+    def __init__(
+        self,
+        dataset: LeRobotMixtureDataset,
+        weight_scheduler: DatasetWeightScheduler,
+        update_frequency: int = 100,
+    ):
+        """
+        Initialize the callback.
+
+        Args:
+            dataset: The mixture dataset to update
+            weight_scheduler: The scheduler that computes weights
+            update_frequency: How often to update weights (in steps)
+        """
+        self.dataset = dataset
+        self.weight_scheduler = weight_scheduler
+        self.update_frequency = update_frequency
+        self.last_update_step = -1
+
+    def on_step_end(self, args, state: TrainerState, control: TrainerControl, **kwargs) -> None:
+        """Update dataset weights at each training step."""
+        current_step = state.global_step
+
+        # Update weights at specified frequency
+        if current_step % self.update_frequency == 0 and current_step != self.last_update_step:
+            new_weights = self.weight_scheduler.get_weights(current_step)
+
+            # Update the mixture dataset's sampling weights
+            # Account for balance_dataset_weights if enabled
+            if self.dataset.balance_dataset_weights:
+                adjusted_weights = new_weights * self.dataset.dataset_lengths
+                adjusted_weights = adjusted_weights / adjusted_weights.sum()
+            else:
+                adjusted_weights = new_weights
+
+            self.dataset._dataset_sampling_weights = adjusted_weights
+
+            # Log the update
+            if current_step % (self.update_frequency * 10) == 0:  # Log every 10 updates
+                progress = self.weight_scheduler.get_progress(current_step)
+                print(
+                    f"\n[Step {current_step}] Updated dataset weights "
+                    f"(progress: {progress:.2%}):"
+                )
+                for i, weight in enumerate(new_weights):
+                    print(f"  Dataset {i}: {weight:.4f}")
+
+            self.last_update_step = current_step
 
 
 @dataclass
@@ -69,7 +232,7 @@ class ArgsConfig:
     """Number of steps between saving checkpoints."""
 
     # Model parameters
-    base_model_path: str = "nvidia/GR00T-N1.5-3B"
+    base_model_path: str = "/data/anthony/Isaac-GR00T/checkpoints/1027_200demos/checkpoint-20000"
     """Path or HuggingFace model ID for the base model."""
 
     tune_llm: bool = False
@@ -136,6 +299,28 @@ class ArgsConfig:
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
 
+    # Progressive dataset sampling parameters
+    dataset_weights: Optional[List[float]] = None
+    """Initial sampling weights for each dataset. If None, uses uniform weights. Must match number of datasets."""
+
+    priority_dataset_indices: Optional[List[int]] = None
+    """Indices (0-based) of datasets to prioritize during training. If None, no progressive weighting is applied."""
+
+    max_priority_weight: float = 10.0
+    """Maximum weight multiplier for priority datasets at end of schedule."""
+
+    weight_schedule_type: Literal["linear", "exponential", "cosine"] = "linear"
+    """Type of weight schedule progression."""
+
+    weight_warmup_steps: int = 0
+    """Number of steps to keep uniform weights before starting schedule."""
+
+    weight_schedule_start_step: int = 0
+    """Training step to start increasing priority dataset weights."""
+
+    weight_schedule_end_step: Optional[int] = None
+    """Training step to reach maximum priority weights. If None, uses max_steps."""
+
 
 #####################################################################################
 # main training function
@@ -161,6 +346,7 @@ def main(config: ArgsConfig):
             embodiment_tag=embodiment_tag,  # This will override the dataset's embodiment tag to "new_embodiment"
             video_backend=config.video_backend,
         )
+        weight_scheduler = None
     else:
         single_datasets = []
         for p in config.dataset_path:
@@ -176,10 +362,43 @@ def main(config: ArgsConfig):
             )
             single_datasets.append(dataset)
 
+        # Determine initial weights
+        num_datasets = len(single_datasets)
+        if config.dataset_weights is not None:
+            assert len(config.dataset_weights) == num_datasets, (
+                f"Number of dataset weights ({len(config.dataset_weights)}) "
+                f"must match number of datasets ({num_datasets})"
+            )
+            initial_weights = config.dataset_weights
+        else:
+            initial_weights = [1.0] * num_datasets
+
+        # Create weight scheduler if priority datasets are specified
+        weight_scheduler = None
+        if config.priority_dataset_indices is not None:
+            schedule_end_step = (
+                config.weight_schedule_end_step
+                if config.weight_schedule_end_step is not None
+                else config.max_steps
+            )
+            weight_scheduler = DatasetWeightScheduler(
+                num_datasets=num_datasets,
+                initial_weights=initial_weights,
+                priority_dataset_indices=config.priority_dataset_indices,
+                max_priority_weight=config.max_priority_weight,
+                schedule_type=config.weight_schedule_type,
+                warmup_steps=config.weight_warmup_steps,
+                schedule_start_step=config.weight_schedule_start_step,
+                schedule_end_step=schedule_end_step,
+            )
+            print(f"\nCreated dataset weight scheduler:")
+            print(weight_scheduler)
+            print(f"Initial weights: {weight_scheduler.get_weights(0)}")
+            print(f"Final weights: {weight_scheduler.get_weights(schedule_end_step)}\n")
+
         train_dataset = LeRobotMixtureDataset(
             data_mixture=[
-                (dataset, 1.0)  # we will use equal weights for all datasets
-                for dataset in single_datasets
+                (dataset, weight) for dataset, weight in zip(single_datasets, initial_weights)
             ],
             mode="train",
             balance_dataset_weights=config.balance_dataset_weights,
@@ -298,10 +517,20 @@ def main(config: ArgsConfig):
         resume_from_checkpoint=config.resume,
     )
 
-    # 2.3 run experiment
+    # 2.3 add dataset weight callback if using progressive sampling
+    if weight_scheduler is not None:
+        weight_callback = DatasetWeightCallback(
+            dataset=train_dataset,
+            weight_scheduler=weight_scheduler,
+            update_frequency=100,  # Update weights every 100 steps
+        )
+        experiment.trainer.add_callback(weight_callback)
+        print("Added dataset weight callback to trainer\n")
+
+    # 2.4 run experiment
     experiment.train()
 
-    # 2.4 save indices configuration
+    # 2.5 save indices configuration
     indices_config = {
         "video_observation_indices": getattr(data_config_cls, "video_observation_indices", [0]),
         "state_observation_indices": getattr(data_config_cls, "state_observation_indices", [0]),
