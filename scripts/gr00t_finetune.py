@@ -88,7 +88,7 @@ class ArgsConfig:
     """Whether to resume from a checkpoint."""
 
     # Advanced training parameters
-    learning_rate: float = 5e-6
+    learning_rate: float = 1e-4
     """Learning rate for training."""
 
     weight_decay: float = 1e-5
@@ -136,7 +136,7 @@ class ArgsConfig:
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
 
-    error_recovery_upsample_factor: float = 10.0
+    error_recovery_upsample_factor: float = 1.0
     """Upsampling factor for error_recovery datasets. Datasets with 'error_recovery' in their path will be weighted by this factor."""
 
 
