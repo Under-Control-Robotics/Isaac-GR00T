@@ -1,6 +1,6 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=0 python scripts/gr00t_finetune.py \
+CUDA_VISIBLE_DEVICES=1 python scripts/gr00t_finetune.py \
   --dataset-path \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-02-19_20:53:47.501581 \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-02-20_19:51:02.218268 \
@@ -49,24 +49,41 @@ CUDA_VISIBLE_DEVICES=0 python scripts/gr00t_finetune.py \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-03_21:08:42.921587 \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-03_21:46:53.862428 \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-03_22:30:03.874931 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-02-27_08:14:08.248872 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-02-28_03:24:07.235031 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-02_03:59:58.652610 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-02_04:41:30.599527 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-02_19:17:52.576046 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-03_03:49:42.214988 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-03_23:02:21.229839 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-03_23:21:44.948674 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-03_23:39:31.287473 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-04_01:08:25.145744 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-04_01:58:38.520475 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-04_02:36:11.762755 \
-    /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-04_03:25:23.581554 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-03_23:02:21.229839 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-03_23:21:44.948674 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-03_23:39:31.287473 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_01:08:25.145744 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_01:58:38.520475 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_02:36:11.762755 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_03:25:23.581554 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_17:24:23.506568 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_18:03:58.459067 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_18:59:26.335959 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_19:50:33.585198 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_20:26:22.210129 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_21:24:20.767431 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-04_22:13:24.014784 \
+    /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam/2026-03-05_17:00:28.439906 \
   --num-gpus 1 \
   --batch-size 64 \
-  --output-dir checkpoints/0304_pretrain_all_data \
+  --output-dir checkpoints/0305_pretrain_no_dagger\
   --data-config ucr_wblm_moby_history \
-  --max-steps 50000 \
+  --max-steps 60000 \
   --no-tune-visual \
-  --save-steps 50000 \
-# Total datasets: 60 (47 joint_single_cam + 13 error_recovery with 10x upsampling)
+  --save-steps 60000
+# Total datasets: 76 (62 joint_single_cam + 14 error_recovery with 10x upsampling)
+
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-02-27_08:14:08.248872 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-02-28_03:24:07.235031 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-02_03:59:58.652610 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-02_04:41:30.599527 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-02_19:17:52.576046 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-03_03:49:42.214988 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-03_23:02:21.229839 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-03_23:21:44.948674 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-03_23:39:31.287473 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-04_01:08:25.145744 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-04_01:58:38.520475 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-04_02:36:11.762755 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-04_03:25:23.581554 \
+    # /data/anthony/ucr_ros/data_files/vla_dataset_output/error_recovery/2026-03-05_06:34:33.737018 \
