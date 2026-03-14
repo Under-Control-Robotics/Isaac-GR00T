@@ -61,7 +61,6 @@ CUDA_VISIBLE_DEVICES=1 python scripts/gr00t_finetune.py \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-05_18:28:28.831138 \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-05_19:26:38.187737 \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-05_20:25:17.726939 \
-    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-05_21:18:07.882156 \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-09_18:25:26.759561 \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-09_18:59:44.627194 \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-09_19:29:54.365311 \
