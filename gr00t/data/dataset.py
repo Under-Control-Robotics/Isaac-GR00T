@@ -423,12 +423,67 @@ class LeRobotSingleDataset(Dataset):
                 ("traj_1", 0), ("traj_1", 1),
                 ("traj_2", 0), ("traj_2", 1), ("traj_2", 2), ("traj_2", 3)
             ]
+
+        For error_recovery datasets:
+            - Only include frames from 30 (1s @ 30fps) to len-60 (2s before end @ 30fps)
+            - Full episode data is still accessible for state history and action chunks
         """
         all_steps: list[tuple[int, int]] = []
+        is_error_recovery = "error_recovery" in str(self.dataset_path)
+
         for trajectory_id, trajectory_length in zip(self.trajectory_ids, self.trajectory_lengths):
-            for base_index in range(trajectory_length):
-                all_steps.append((trajectory_id, base_index))
+            if is_error_recovery:
+                # Clip error recovery episodes: skip first 1s (30 frames) and last 2s (60 frames)
+                start_frame = 30
+                end_frame = trajectory_length - 60
+
+                # Only add steps if the trajectory is long enough to have a valid clip
+                if end_frame > start_frame:
+                    for base_index in range(start_frame, end_frame):
+                        all_steps.append((trajectory_id, base_index))
+                else:
+                    # If trajectory is too short, skip it entirely
+                    print(
+                        f"Warning: Error recovery trajectory {trajectory_id} is too short ({trajectory_length} frames), skipping"
+                    )
+            else:
+                # Regular datasets: use all frames
+                for base_index in range(trajectory_length):
+                    all_steps.append((trajectory_id, base_index))
+
+        if is_error_recovery:
+            print(
+                f"Error recovery dataset clipping: Generated {len(all_steps)} training steps (skipping first 30 and last 60 frames of each episode)"
+            )
+
         return all_steps
+
+    def get_valid_indices_for_trajectory(self, trajectory_id: int) -> np.ndarray:
+        """Get the valid base indices for a given trajectory.
+
+        For error recovery datasets, this returns the clipped range [30, len-60).
+        For normal datasets, this returns the full range [0, len).
+
+        Args:
+            trajectory_id (int): The trajectory ID.
+
+        Returns:
+            np.ndarray: Array of valid base indices for this trajectory.
+        """
+        trajectory_index = self.get_trajectory_index(trajectory_id)
+        trajectory_length = self.trajectory_lengths[trajectory_index]
+        is_error_recovery = "error_recovery" in str(self.dataset_path)
+
+        if is_error_recovery:
+            start_frame = 30
+            end_frame = trajectory_length - 60
+            if end_frame > start_frame:
+                return np.arange(start_frame, end_frame)
+            else:
+                # Empty array for trajectories that are too short
+                return np.array([], dtype=np.int64)
+        else:
+            return np.arange(trajectory_length)
 
     def _get_modality_keys(self) -> dict:
         """Get the modality keys for the dataset.
@@ -1099,8 +1154,15 @@ class LeRobotMixtureDataset(Dataset):
         )
         trajectory_id = dataset.trajectory_ids[trajectory_index]
 
-        # Sample step
-        base_index = rng.choice(dataset.trajectory_lengths[trajectory_index])
+        # Sample step from valid indices for this trajectory
+        # This respects clipping for error_recovery datasets
+        valid_indices = dataset.get_valid_indices_for_trajectory(trajectory_id)
+        if len(valid_indices) == 0:
+            # If no valid indices (trajectory too short), fall back to sampling from full range
+            # This should rarely happen since we filter during _get_all_steps
+            base_index = rng.choice(dataset.trajectory_lengths[trajectory_index])
+        else:
+            base_index = rng.choice(valid_indices)
         return dataset, trajectory_id, base_index
 
     def __getitem__(self, index: int) -> dict:
