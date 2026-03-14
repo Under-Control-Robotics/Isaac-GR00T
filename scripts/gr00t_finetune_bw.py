@@ -69,9 +69,7 @@ class ArgsConfig:
     """Number of steps between saving checkpoints."""
 
     # Model parameters
-    base_model_path: str = (
-        "/data/anthony/Isaac-GR00T/checkpoints/0311_pretrain_10x/checkpoint-60000"
-    )
+    base_model_path: str = "nvidia/GR00T-N1.5-3B"
     """Path or HuggingFace model ID for the base model."""
 
     tune_llm: bool = False
@@ -90,7 +88,7 @@ class ArgsConfig:
     """Whether to resume from a checkpoint."""
 
     # Advanced training parameters
-    learning_rate: float = 5e-6
+    learning_rate: float = 1e-4
     """Learning rate for training."""
 
     weight_decay: float = 1e-5
