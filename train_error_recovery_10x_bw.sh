@@ -83,6 +83,24 @@ CUDA_VISIBLE_DEVICES=1 python scripts/gr00t_finetune.py \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-12_19:02:46.527628 \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-12_20:18:33.282914 \
     /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-12_20:53:38.960644 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_00:53:47.714387 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_01:21:18.313868 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_01:42:57.391667 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_01:56:39.201282 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_02:10:45.263073 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_02:26:00.586668 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_16:38:59.131051 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_17:01:48.913717 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_17:21:29.733539 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_17:55:12.419802 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_18:17:47.738606 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_18:31:54.018416 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_19:11:55.451648 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_19:24:41.772166 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_19:42:03.277383 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-16_00:53:33.061160 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-16_01:37:13.421843 \
+    /data/anthony/ucr_ros/data_files/dataset/normal_data/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-16_01:55:36.706122 \
     /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-02-27_08:14:08.248872 \
     /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-02-28_03:24:07.235031 \
     /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-02_03:59:58.652610 \
@@ -103,6 +121,10 @@ CUDA_VISIBLE_DEVICES=1 python scripts/gr00t_finetune.py \
     /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-10_03:02:00.670160 \
     /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-11_02:28:35.651167 \
     /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-12_00:08:44.062200 \
+    /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_21:51:26.813709 \
+    /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_22:24:11.464027 \
+    /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_22:58:39.004569 \
+    /data/anthony/ucr_ros/data_files/dataset/error_recovery/pick_up_the_plastic_box_then_place_it_in_the_tray_/2026-03-15_23:45:03.967977 \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam_data_aug-trimmed/2026-03-09_18:25:26.759561 \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam_data_aug-trimmed/2026-03-09_18:59:44.627194 \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam_data_aug-trimmed/2026-03-09_19:29:54.365311 \
@@ -121,10 +143,10 @@ CUDA_VISIBLE_DEVICES=1 python scripts/gr00t_finetune.py \
     /data/anthony/ucr_ros/data_files/vla_dataset_output/grippy/joint_single_cam_data_aug-trimmed/2026-03-12_20:53:38.960644 \
   --num-gpus 1 \
   --batch-size 64 \
-  --output-dir checkpoints/0312_pretrain_64_horizon_bw_green\
+  --output-dir checkpoints/0316_pretrain\
   --data-config ucr_wblm_moby_history \
-  --max-steps 60000 \
+  --max-steps 70000 \
   --no-tune-visual \
-  --save-steps 60000
-# Total datasets: 102 (82 normal_data + 20 error_recovery)
+  --save-steps 70000
+# Total datasets: 140 (100 normal_data + 24 error_recovery + 16 vla_dataset_output)
 
