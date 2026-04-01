@@ -1254,27 +1254,16 @@ class UCRWBLMMobyHistoryDataConfig(BaseDataConfig):
 
     video_keys = ["video.ego_view"]
     state_keys = [
-        "state.waist_joint",
-        "state.right_arm_joint",
-        "state.right_leg_joint",
-        "state.left_arm_joint",
-        "state.left_leg_joint",
+        "state.state",
     ]
     action_keys = [
-        "action.behavior_mode",
-        "action.left_ee_position",
-        "action.left_ee_orientation",
-        "action.right_ee_position",
-        "action.right_ee_orientation",
-        "action.base_vel",
-        "action.base_height",
-        "action.base_orientation",
+        "action.action",
     ]
     language_keys = ["annotation.human.action.task_description"]
 
     # Separate indices for each modality
-    video_observation_indices = [-30, 0]
-    state_observation_indices = [0]
+    video_observation_indices = [0]
+    state_observation_indices = [-30, -27, -24, -21, -18, -15, -12, -9, -6, -3, 0]
     action_indices = list(range(16))
 
     def modality_config(self) -> dict[str, ModalityConfig]:

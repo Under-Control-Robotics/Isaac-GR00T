@@ -7,16 +7,19 @@ information-preserving summary of the VLA's final-layer token embeddings.
 
 Usage:
     python scripts/train_rl_token.py \
-        --dataset_path /data/my_task \
+        --dataset_path $(cat datasets.txt) \
         --model_path nvidia/GR00T-N1.5-3B \
         --embodiment_tag new_embodiment \
-        --data_config fourier_gr1_arms_only \
+        --data_config ucr_wblm_moby_history \
         --output_dir /tmp/rl_token_ckpt
 """
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Literal
+
+import wandb
 
 import torch
 from torch.optim import AdamW
@@ -29,7 +32,7 @@ from gr00t.data.dataset import LeRobotSingleDataset
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.experiment.data_config import load_data_config
 from gr00t.model.rl_policy import Gr00tRLTokenPolicy
-from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
+from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING, DefaultDataCollator
 
 
 @dataclass
@@ -58,7 +61,7 @@ class Config:
     # --- training ---
     output_dir: str = "/tmp/rl_token_ckpt"
     batch_size: int = 16
-    max_steps: int = 5000
+    max_steps: int = 10000
     learning_rate: float = 3e-4
     weight_decay: float = 1e-5
     num_workers: int = 4
@@ -69,17 +72,12 @@ class Config:
     # Keep 0 unless you want to combine SFT + RL token in one pass.
     vla_lr: float = 0.0
 
+    # --- logging ---
+    wandb_project: str = "gr00t-rl-token"
+    wandb_run_name: str = ""
 
-def collate_fn(batch):
-    """Stack list-of-dicts into dict-of-tensors, skipping non-tensor values."""
-    out = {}
-    for key in batch[0]:
-        vals = [b[key] for b in batch]
-        if isinstance(vals[0], torch.Tensor):
-            out[key] = torch.stack(vals)
-        else:
-            out[key] = vals
-    return out
+
+collate_fn = DefaultDataCollator()
 
 
 def main(cfg: Config):
@@ -120,7 +118,27 @@ def main(cfg: Config):
     )
 
     # ------------------------------------------------------------------ #
-    # 2. Policy (VLA frozen inside Gr00tRLTokenPolicy.__init__)
+    # 2. Write metadata so Gr00tPolicy._load_metadata can find it.
+    #    (mirrors what TrainRunner does before training)
+    # ------------------------------------------------------------------ #
+    # Resolve HuggingFace model id → local cache path (or keep local path)
+    try:
+        from huggingface_hub import snapshot_download
+        resolved_model_path = Path(snapshot_download(cfg.model_path, repo_type="model"))
+    except Exception:
+        resolved_model_path = Path(cfg.model_path)
+
+    exp_cfg_dir = resolved_model_path / "experiment_cfg"
+    exp_cfg_dir.mkdir(exist_ok=True)
+    metadata_path = exp_cfg_dir / "metadata.json"
+    metadata_json = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
+    if embodiment_tag.value not in metadata_json:
+        metadata_json[embodiment_tag.value] = datasets[0].metadata.model_dump(mode="json")
+        metadata_path.write_text(json.dumps(metadata_json, indent=4))
+        print(f"Wrote {embodiment_tag.value} metadata to {metadata_path}")
+
+    # ------------------------------------------------------------------ #
+    # 3. Policy (VLA frozen inside Gr00tRLTokenPolicy.__init__)
     # ------------------------------------------------------------------ #
     policy = Gr00tRLTokenPolicy(
         model_path=cfg.model_path,
@@ -129,7 +147,7 @@ def main(cfg: Config):
         modality_transform=transforms,
         device=device,
     )
-    policy.rl_token_module.to(device)
+    policy.rl_token_module.to(device)  # keep float32 — backbone features cast to float32 at boundary
     policy.rl_token_module.train()
 
     # ------------------------------------------------------------------ #
@@ -154,7 +172,13 @@ def main(cfg: Config):
     # ------------------------------------------------------------------ #
     data_iter = iter(dataloader)
     step = 0
-    running_loss = 0.0
+    running_loss = running_recon = running_var = 0.0
+
+    wandb.init(
+        project=cfg.wandb_project,
+        name=cfg.wandb_run_name or None,
+        config=cfg.__dict__,
+    )
 
     print(f"Starting RL token training for {cfg.max_steps} steps...")
 
@@ -174,8 +198,7 @@ def main(cfg: Config):
 
         optimizer.zero_grad()
 
-        # rl_token_loss: runs backbone with no_grad, then trains encoder-decoder
-        loss = policy.rl_token_loss(batch)
+        loss, recon_loss, var_loss = policy.rl_token_loss(batch)
         loss.backward()
 
         torch.nn.utils.clip_grad_norm_(policy.rl_token_module.parameters(), 1.0)
@@ -183,13 +206,23 @@ def main(cfg: Config):
         scheduler.step()
 
         running_loss += loss.item()
+        running_recon += recon_loss.item()
+        running_var += var_loss.item()
         step += 1
 
         if step % cfg.log_every == 0:
             avg = running_loss / cfg.log_every
+            avg_recon = running_recon / cfg.log_every
+            avg_var = running_var / cfg.log_every
             lr = scheduler.get_last_lr()[0]
-            print(f"step {step:>6d} | loss {avg:.6f} | lr {lr:.2e}")
-            running_loss = 0.0
+            print(f"step {step:>6d} | loss {avg:.6f} | recon {avg_recon:.6f} | var {avg_var:.6f} | lr {lr:.2e}")
+            wandb.log({
+                "train/loss": avg,
+                "train/recon_loss": avg_recon,
+                "train/var_loss": avg_var,
+                "train/lr": lr,
+            }, step=step)
+            running_loss = running_recon = running_var = 0.0
 
         if step % cfg.save_every == 0:
             ckpt_path = output_dir / f"rl_token_step{step}.pt"
@@ -215,6 +248,7 @@ def main(cfg: Config):
         final_path,
     )
     print(f"Training complete. Final checkpoint: {final_path}")
+    wandb.finish()
 
 
 if __name__ == "__main__":

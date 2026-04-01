@@ -24,7 +24,8 @@ class Gr00tRLTokenPolicy(Gr00tPolicy):
         for p in self.model.parameters():
             p.requires_grad_(False)
 
-        feat_dim = self.model.backbone.project_to_dim   # 1536
+        linear = self.model.backbone.eagle_linear
+        feat_dim = linear.out_features if hasattr(linear, "out_features") else 2048
 
         self.rl_token_module = RLTokenModule(vla_dim=feat_dim)
         self.actor = RLActor(
@@ -65,10 +66,11 @@ class Gr00tRLTokenPolicy(Gr00tPolicy):
         return {"action": action, "ref_action": ref_chunk, "z_rl": z_rl}
 
     # --- Phase 1 training loss ---
-    def rl_token_loss(self, normalized_input: dict) -> Tensor:
+    def rl_token_loss(self, normalized_input: dict) -> tuple[Tensor, Tensor, Tensor]:
+        """Returns (total_loss, recon_loss, var_loss)."""
         with torch.no_grad():
             backbone_out = self.model.get_backbone_features(normalized_input)
-        feats = backbone_out["backbone_features"]
+        feats = backbone_out["backbone_features"].float()
         mask  = backbone_out.get("backbone_attention_mask")
         return self.rl_token_module.reconstruction_loss(feats, mask)
 

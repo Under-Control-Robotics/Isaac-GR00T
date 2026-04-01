@@ -168,6 +168,13 @@ class GR00T_N1_5(PreTrainedModel):
         self.validate_data(action_head_outputs, backbone_outputs, is_training=True)
         return action_head_outputs
 
+    def get_backbone_features(
+        self,
+        inputs: dict,
+    ) -> BatchFeature:
+        backbone_inputs, _ = self.prepare_input(inputs)
+        return self.backbone(backbone_inputs)
+
     def get_action(
         self,
         inputs: dict,
