@@ -18,8 +18,11 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Literal
+import random
 
 import wandb
+
+import numpy as np
 
 import torch
 from torch.optim import AdamW
@@ -33,7 +36,6 @@ from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.experiment.data_config import load_data_config
 from gr00t.model.rl_policy import Gr00tRLTokenPolicy
 from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING, DefaultDataCollator
-
 
 @dataclass
 class Config:
@@ -72,6 +74,8 @@ class Config:
     # Keep 0 unless you want to combine SFT + RL token in one pass.
     vla_lr: float = 0.0
 
+    seed: int = 42
+
     # --- logging ---
     wandb_project: str = "gr00t-rl-token"
     wandb_run_name: str = ""
@@ -81,6 +85,11 @@ collate_fn = DefaultDataCollator()
 
 
 def main(cfg: Config):
+    torch.manual_seed(cfg.seed)
+    torch.cuda.manual_seed_all(cfg.seed)
+    random.seed(cfg.seed)
+    np.random.seed(cfg.seed)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
