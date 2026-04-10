@@ -389,11 +389,12 @@ def run_groot_inference(
     dataset_path: str,
     model_path: str,
     onnx_model_path: str,
+    data_config_name: str = "ucr_wblm_moby_wrist_history",
     device: str = "cuda",
 ) -> Dict[str, float]:
 
     # load the policy
-    data_config = DATA_CONFIG_MAP["ucr_wblm_moby_history"]
+    data_config = DATA_CONFIG_MAP[data_config_name]
     modality_config = data_config.modality_config()
     modality_transform = data_config.transform()
     EMBODIMENT_TAG = "new_embodiment"
@@ -457,15 +458,24 @@ if __name__ == "__main__":
         default=os.path.join(os.getcwd(), "gr00t_onnx"),
     )
 
+    parser.add_argument(
+        "--data-config",
+        type=str,
+        help="Data config name from DATA_CONFIG_MAP",
+        default="ucr_wblm_moby_wrist_history",
+    )
+
     args = parser.parse_args()
 
     print(f"Dataset path: {args.dataset_path}")
     print(f"Model path: {args.model_path}")
     print(f"ONNX model path: {args.onnx_model_path}")
+    print(f"Data config: {args.data_config}")
     predicted_action = run_groot_inference(
         args.dataset_path,
         args.model_path,
         args.onnx_model_path,
+        data_config_name=args.data_config,
     )
 
     for key, value in predicted_action.items():
