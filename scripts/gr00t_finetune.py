@@ -232,15 +232,30 @@ def main(config: ArgsConfig):
 
             checkpoint_metadata = DatasetMetadata.model_validate(checkpoint_metadata_dict)
 
-            # Override the dataset's statistics with checkpoint statistics
+            # Override the dataset's statistics with checkpoint statistics.
+            # Keep video modalities from the current dataset so that different
+            # camera configurations don't break the transform metadata lookup.
+            def _merge_metadata(checkpoint_meta, current_dataset):
+                return checkpoint_meta.model_copy(
+                    update={
+                        "modalities": checkpoint_meta.modalities.model_copy(
+                            update={"video": current_dataset.metadata.modalities.video}
+                        )
+                    }
+                )
+
             if isinstance(train_dataset, LeRobotSingleDataset):
-                train_dataset.set_transforms_metadata(checkpoint_metadata)
+                train_dataset.set_transforms_metadata(
+                    _merge_metadata(checkpoint_metadata, train_dataset)
+                )
                 print(f"✓ Applied checkpoint statistics to single dataset")
             elif isinstance(train_dataset, LeRobotMixtureDataset):
                 # Override merged_metadata for mixture dataset
                 train_dataset.merged_metadata = {embodiment_tag.value: checkpoint_metadata}
                 for dataset in train_dataset.datasets:
-                    dataset.set_transforms_metadata(checkpoint_metadata)
+                    dataset.set_transforms_metadata(
+                        _merge_metadata(checkpoint_metadata, dataset)
+                    )
                 print(
                     f"✓ Applied checkpoint statistics to {len(train_dataset.datasets)} datasets in mixture"
                 )
