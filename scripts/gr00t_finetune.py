@@ -251,7 +251,9 @@ def main(config: ArgsConfig):
                 print(f"✓ Applied checkpoint statistics to single dataset")
             elif isinstance(train_dataset, LeRobotMixtureDataset):
                 # Override merged_metadata for mixture dataset
-                train_dataset.merged_metadata = {embodiment_tag.value: checkpoint_metadata}
+                # Use the first dataset to get the correct video modalities for merged metadata
+                merged_meta = _merge_metadata(checkpoint_metadata, train_dataset.datasets[0])
+                train_dataset.merged_metadata = {embodiment_tag.value: merged_meta}
                 for dataset in train_dataset.datasets:
                     dataset.set_transforms_metadata(
                         _merge_metadata(checkpoint_metadata, dataset)
