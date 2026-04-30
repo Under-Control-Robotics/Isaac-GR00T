@@ -229,6 +229,13 @@ class GR00TTransform(InvertibleModalityTransform):
             if isinstance(raw_language, list):
                 raw_language = raw_language[0]
 
+            # Drop short annotations (likely incomplete/garbage captions).
+            token_ids = self.eagle_processor.tokenizer.encode(
+                raw_language, add_special_tokens=False
+            )
+            if len(token_ids) < 200:
+                raw_language = ""
+
             # Language dropout
             if self.training and self.language_dropout_prob > 1e-9:
                 if random.random() < self.language_dropout_prob:
